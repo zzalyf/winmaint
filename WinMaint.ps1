@@ -119,6 +119,9 @@ function Resolve-WMWinget {
 }
 $Winget = Resolve-WMWinget
 
+# System manufacturer, used to show only the matching OEM tool in the UI.
+$WMManufacturer = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).Manufacturer
+
 # ============================================================
 #  ENGINE FUNCTIONS  (run inside the worker runspace)
 #  All write progress through Write-WMLog -> $sync.LogQueue.
@@ -288,11 +291,16 @@ function Invoke-WMEventLog {
 }
 
 function Invoke-WMCleanup {
-    Write-WMLog "CLEAN TEMPORARY FILES" head
+    Write-WMLog "CLEAN TEMPORARY FILES (system drive only)" head
+    $sysDrive = $env:SystemDrive   # e.g. C:
     $tempPaths = @($env:TEMP, $env:TMP, "$env:SystemRoot\Temp", "$env:LOCALAPPDATA\Temp")
     [long]$totalFreed = 0
     foreach ($path in ($tempPaths | Sort-Object -Unique)) {
         if (-not (Test-Path $path)) { continue }
+        # Safety: only ever clean paths on the system drive (C:).
+        if (([System.IO.Path]::GetPathRoot($path)).TrimEnd('\') -ine $sysDrive) {
+            Write-WMLog "Skipping (not on ${sysDrive}): $path" warn; continue
+        }
         Write-WMLog "Cleaning: $path" step
         try {
             $size = (Get-ChildItem $path -Recurse -Force -ErrorAction SilentlyContinue |
@@ -587,17 +595,6 @@ function Invoke-WMIntelDSA {
     if ($iExe) { Start-Process $iExe; Write-WMLog "Intel DSA launched." ok }
     elseif (Start-WMShortcut "*Intel*Driver*Support Assistant*") { Write-WMLog "Intel DSA launched." ok }
     else { Start-Process "https://www.intel.com/content/www/us/en/support/detect.html"; Write-WMLog "Opened Intel DSA scan page in the browser." ok }
-}
-
-function Invoke-WMPatchMyPC {
-    Write-WMLog "PATCH MY PC HOME UPDATER" head
-    $dest = Join-Path $env:TEMP 'PatchMyPC.exe'
-    try {
-        Invoke-WebRequest -Uri "https://patchmypc.com/freeupdater/PatchMyPC.exe" -OutFile $dest -UseBasicParsing -ErrorAction Stop
-        Write-WMLog "Downloaded. Launching (separate window)..." step
-        Start-Process -FilePath $dest
-        Write-WMLog "Patch My PC launched." ok
-    } catch { Write-WMLog "Patch My PC failed: $_" err }
 }
 
 # --- Tweaks (data-driven, reversible) -----------------------
@@ -911,20 +908,33 @@ $Config = [ordered]@{
         # Remote Access
         @{ Type = 'fn'; Category = 'Remote Access'; Label = 'OpenSSH Server - Enable'; Action = 'Invoke-WMEnableOpenSSH' }
     )
-    Updates = @(
-        @{ Key = 'wu';     Label = 'Windows Update';                 Action = 'Invoke-WMWindowsUpdate';  Default = $false }
-        @{ Key = 'store';  Label = 'Microsoft Store (apps)';         Action = 'Invoke-WMStoreUpdate';    Default = $false }
-        @{ Key = 'office'; Label = 'Microsoft Office (Click-to-Run)';Action = 'Invoke-WMOfficeUpdate';   Default = $false }
-        @{ Key = 'wgall';  Label = 'winget upgrade --all';           Action = 'Invoke-WMWingetUpgradeAll';Default = $false }
-        @{ Key = 'lenovo'; Label = 'Lenovo Vantage (so Lenovo)';     Action = 'Invoke-WMLenovoVantage';  Default = $false }
-        @{ Key = 'hp';     Label = 'HP Support Assistant (so HP)';   Action = 'Invoke-WMHPSupport';      Default = $false }
-        @{ Key = 'dell';   Label = 'Dell Command | Update (so Dell)';Action = 'Invoke-WMDellCommandUpdate'; Default = $false }
-        @{ Key = 'intel';  Label = 'Intel Driver & Support Assistant';Action = 'Invoke-WMIntelDSA';      Default = $false }
-        @{ Key = 'pmp';    Label = 'Patch My PC (apps 3rd-party)';   Action = 'Invoke-WMPatchMyPC';      Default = $false }
+    StandardMaintenance = @(
+        @{ Category = 'Updates'; Label = 'Windows Update';                  Action = 'Invoke-WMWindowsUpdate'; Default = $false }
+        @{ Category = 'Updates'; Label = 'Microsoft Store (apps)';          Action = 'Invoke-WMStoreUpdate';   Default = $false }
+        @{ Category = 'Updates'; Label = 'Microsoft Office (Click-to-Run)'; Action = 'Invoke-WMOfficeUpdate';  Default = $false }
+        @{ Category = 'Updates'; Label = 'winget upgrade --all';            Action = 'Invoke-WMWingetUpgradeAll'; Default = $false }
+        @{ Category = 'Updates'; Label = 'Lenovo Vantage';                   Action = 'Invoke-WMLenovoVantage';     Default = $false; OemMatch = 'Lenovo' }
+        @{ Category = 'Updates'; Label = 'HP Support Assistant';             Action = 'Invoke-WMHPSupport';         Default = $false; OemMatch = 'HP|Hewlett' }
+        @{ Category = 'Updates'; Label = 'Dell Command | Update';            Action = 'Invoke-WMDellCommandUpdate'; Default = $false; OemMatch = 'Dell' }
+        @{ Category = 'Updates'; Label = 'Intel Driver & Support Assistant'; Action = 'Invoke-WMIntelDSA';          Default = $false }
+        @{ Category = 'Cleanup'; Label = 'Clean temp + Disk Cleanup + Prefetch (C: only)'; Action = 'Invoke-WMCleanup'; Default = $false }
     )
-    Cleanup = @(
-        @{ Key = 'clean'; Label = 'Limpar temporarios + Disk Cleanup + Prefetch'; Action = 'Invoke-WMCleanup'; Default = $false }
-    )
+}
+
+# Control type per category (WinUtil-style): preferences = immediate toggles,
+# fixes/panels/remote = one-click buttons; everything else = batch checkbox.
+foreach ($k in $Config.Keys) {
+    foreach ($item in $Config[$k]) {
+        if (-not $item.Control) {
+            $item.Control = switch ($item.Category) {
+                'Preferences'   { 'toggle' }
+                'Fixes'         { 'button' }
+                'Legacy Panels' { 'button' }
+                'Remote Access' { 'button' }
+                default         { 'check' }
+            }
+        }
+    }
 }
 
 # ============================================================
@@ -1007,14 +1017,24 @@ $xaml = @'
       <TabItem Header="Install"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Install" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Tweaks"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Tweaks" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Config"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Config" Margin="10"/></ScrollViewer></TabItem>
-      <TabItem Header="Updates"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Updates" Margin="10"/></ScrollViewer></TabItem>
-      <TabItem Header="Cleanup"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Cleanup" Margin="10"/></ScrollViewer></TabItem>
+      <TabItem Header="Standard Maintenance"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_StandardMaintenance" Margin="10"/></ScrollViewer></TabItem>
     </TabControl>
   </DockPanel>
 </Window>
 '@
 
 $window = [Windows.Markup.XamlReader]::Parse($xaml)
+
+# Current on/off state of a registry-based tweak (for toggle initial position).
+function Get-WMTweakState {
+    param($T)
+    $r = @($T.Reg)[0]
+    if (-not $r) { return $false }
+    try {
+        $cur = (Get-ItemProperty -Path $r.Path -Name $r.Name -ErrorAction Stop).$($r.Name)
+        return ("$cur" -eq "$($r.On)")
+    } catch { return $false }
+}
 
 # Populate tabs from config; keep references to all checkboxes.
 $AllChecks = New-Object System.Collections.ArrayList
@@ -1035,6 +1055,7 @@ foreach ($tab in $Config.Keys) {
         $wrap.Orientation = 'Horizontal'
         $cats = [ordered]@{}
         foreach ($item in $Config[$tab]) {
+            if ($item.OemMatch -and $WMManufacturer -notmatch $item.OemMatch) { continue }
             if (-not $cats.Contains($item.Category)) { $cats[$item.Category] = New-Object System.Collections.ArrayList }
             $cats[$item.Category].Add($item) | Out-Null
         }
@@ -1045,10 +1066,31 @@ foreach ($tab in $Config.Keys) {
             $hdr.Text = $cat; $hdr.FontWeight = 'Bold'; $hdr.FontSize = 14; $hdr.Foreground = '#89DCEB'; $hdr.Margin = '0,0,0,4'
             $col.Children.Add($hdr) | Out-Null
             foreach ($item in $cats[$cat]) {
-                $cb = New-Object System.Windows.Controls.CheckBox
-                $cb.Content = $item.Label; $cb.IsChecked = [bool]$item.Default; $cb.Tag = $item
-                $col.Children.Add($cb) | Out-Null
-                $AllChecks.Add($cb) | Out-Null
+                switch ($item.Control) {
+                    'button' {
+                        # One-click action (Fixes / Legacy Panels / Remote Access).
+                        $b = New-Object System.Windows.Controls.Button
+                        $b.Content = $item.Label; $b.Tag = $item; $b.Margin = '0,3'
+                        $b.HorizontalAlignment = 'Stretch'; $b.HorizontalContentAlignment = 'Left'
+                        $b.Background = '#45475A'; $b.Foreground = '#CDD6F4'
+                        $b.Add_Click({ Start-WMRunItems @($this.Tag) 'apply' $false })
+                        $col.Children.Add($b) | Out-Null
+                    }
+                    'toggle' {
+                        # Immediate enable/disable, reflecting current system state.
+                        $cb = New-Object System.Windows.Controls.CheckBox
+                        $cb.Content = $item.Label; $cb.Tag = $item
+                        $cb.IsChecked = (Get-WMTweakState $item)
+                        $cb.Add_Click({ $m = if ($this.IsChecked) { 'apply' } else { 'undo' }; Start-WMRunItems @($this.Tag) $m $true })
+                        $col.Children.Add($cb) | Out-Null
+                    }
+                    default {
+                        $cb = New-Object System.Windows.Controls.CheckBox
+                        $cb.Content = $item.Label; $cb.IsChecked = [bool]$item.Default; $cb.Tag = $item
+                        $col.Children.Add($cb) | Out-Null
+                        $AllChecks.Add($cb) | Out-Null
+                    }
+                }
             }
             $wrap.Children.Add($col) | Out-Null
         }
@@ -1056,6 +1098,7 @@ foreach ($tab in $Config.Keys) {
         continue
     }
     foreach ($item in $Config[$tab]) {
+        if ($item.OemMatch -and $WMManufacturer -notmatch $item.OemMatch) { continue }
         $cb = New-Object System.Windows.Controls.CheckBox
         $cb.Content   = $item.Label
         $cb.IsChecked = [bool]$item.Default
@@ -1099,13 +1142,13 @@ $timer.Add_Tick({
 })
 $timer.Start()
 
-# Run the checked items in the worker. $Mode is 'apply' (RUN) or 'undo' (revert
-# tweaks). In undo mode only tweaks act; installs/updates/diagnostics are skipped.
-function Start-WMRun {
-    param([string]$Mode)
+# Core runner: run the given items in the worker runspace. $Mode is 'apply' or
+# 'undo'. $Restart restarts Explorer afterwards if any tweak ran (so UI tweaks
+# show). Used by batch RUN/Undo and by immediate toggles/buttons.
+function Start-WMRunItems {
+    param([object[]]$Items, [string]$Mode, [bool]$Restart)
     if ($sync.Running) { return }
-    $selected = @($AllChecks | Where-Object { $_.IsChecked } | ForEach-Object { $_.Tag })
-    if (-not $selected.Count) { Write-Host "Nothing selected." -ForegroundColor Yellow; return }
+    if (-not $Items -or $Items.Count -eq 0) { Write-Host "Nothing selected." -ForegroundColor Yellow; return }
 
     $sync.Running = $true
     $BtnRun.Content = if ($Mode -eq 'undo') { 'Undoing...' } else { 'Running...' }
@@ -1118,7 +1161,7 @@ function Start-WMRun {
 
     $ps = [powershell]::Create(); $ps.Runspace = $rs
     $ps.AddScript({
-        param($items, $mode)
+        param($items, $mode, $restart)
         try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
         $tweaked = $false
         foreach ($it in $items) {
@@ -1131,14 +1174,21 @@ function Start-WMRun {
                 }
             } catch { Write-WMLog "Error in $($it.Label): $_" err }
         }
-        if ($tweaked) {
+        if ($tweaked -and $restart) {
             Write-WMLog "Restarting Explorer to apply changes..." step
             Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
         }
-    }).AddArgument($selected).AddArgument($Mode) | Out-Null
+    }).AddArgument($Items).AddArgument($Mode).AddArgument($Restart) | Out-Null
 
     $script:WMps = $ps
     $script:WMhandle = $ps.BeginInvoke()
+}
+
+# Batch RUN / Undo: act on checked checkboxes only (toggles/buttons act immediately).
+function Start-WMRun {
+    param([string]$Mode)
+    $selected = @($AllChecks | Where-Object { $_.IsChecked } | ForEach-Object { $_.Tag })
+    Start-WMRunItems $selected $Mode $true
 }
 
 $BtnRun.Add_Click({ Start-WMRun 'apply' })
