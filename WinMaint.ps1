@@ -712,12 +712,47 @@ function Invoke-WMWUReset {
 }
 
 function Invoke-WMWingetReinstall {
-    Write-WMLog "REINSTALL / REPAIR WINGET (App Installer)" head
+    Write-WMLog "INSTALL / UPDATE WINGET (App Installer)" head
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+
+    # Primary (official, same as WinUtil): the Microsoft.WinGet.Client module,
+    # whose Repair-WinGetPackageManager installs winget with all dependencies.
     try {
-        Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe -ErrorAction Stop
-        Write-WMLog "App Installer re-registered." ok
+        Write-WMLog "Installing NuGet provider + Microsoft.WinGet.Client module..." step
+        Install-PackageProvider -Name NuGet -Force -ErrorAction Stop | Out-Null
+        Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery -ErrorAction Stop
+        Write-WMLog "Running Repair-WinGetPackageManager..." step
+        Repair-WinGetPackageManager -AllUsers -Latest -ErrorAction Stop
+        Write-WMLog "winget installed/updated. Select your apps and click RUN again." ok
+        return
     } catch {
-        Write-WMLog "Re-register failed, opening Store page..." warn
+        Write-WMLog "Official module method failed ($_); trying direct download..." warn
+    }
+
+    # Fallback: download the App Installer bundle and its dependencies directly.
+    $tmp = $env:TEMP
+    try {
+        Write-WMLog "Downloading VCLibs dependency..." step
+        $vclibs = Join-Path $tmp 'Microsoft.VCLibs.x64.14.00.Desktop.appx'
+        Invoke-WebRequest 'https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx' -OutFile $vclibs -UseBasicParsing -ErrorAction Stop
+        Add-AppxPackage $vclibs -ErrorAction SilentlyContinue
+
+        Write-WMLog "Downloading UI.Xaml dependency..." step
+        $nupkg = Join-Path $tmp 'uixaml.zip'; $xdir = Join-Path $tmp 'uixaml'
+        Invoke-WebRequest 'https://www.nuget.org/api/v2/package/Microsoft.UI.Xaml/2.8.6' -OutFile $nupkg -UseBasicParsing -ErrorAction Stop
+        if (Test-Path $xdir) { Remove-Item $xdir -Recurse -Force -ErrorAction SilentlyContinue }
+        Expand-Archive $nupkg $xdir -Force
+        $xaml = Get-ChildItem (Join-Path $xdir 'tools\AppX\x64\Release') -Filter *.appx -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($xaml) { Add-AppxPackage $xaml.FullName -ErrorAction SilentlyContinue }
+
+        Write-WMLog "Downloading the latest winget (App Installer)..." step
+        $bundle = Join-Path $tmp 'winget.msixbundle'
+        Invoke-WebRequest 'https://aka.ms/getwinget' -OutFile $bundle -UseBasicParsing -ErrorAction Stop
+        Add-AppxPackage $bundle -ErrorAction Stop
+        Write-WMLog "winget installed/updated. Select your apps and click RUN again." ok
+    } catch {
+        Write-WMLog "Automatic install failed: $_" err
+        Write-WMLog "Opening App Installer in the Microsoft Store..." step
         Start-Process "ms-windows-store://pdp/?productid=9NBLGGH4NNS1"
     }
 }
