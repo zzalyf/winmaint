@@ -716,22 +716,10 @@ function Invoke-WMWUReset {
 function Invoke-WMWingetReinstall {
     Write-WMLog "INSTALL / UPDATE WINGET (App Installer)" head
     try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+    $ProgressPreference = 'SilentlyContinue'
 
-    # Primary (official, same as WinUtil): the Microsoft.WinGet.Client module,
-    # whose Repair-WinGetPackageManager installs winget with all dependencies.
-    try {
-        Write-WMLog "Installing NuGet provider + Microsoft.WinGet.Client module..." step
-        Install-PackageProvider -Name NuGet -Force -ErrorAction Stop | Out-Null
-        Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery -ErrorAction Stop
-        Write-WMLog "Running Repair-WinGetPackageManager..." step
-        Repair-WinGetPackageManager -AllUsers -Latest -ErrorAction Stop
-        Write-WMLog "winget installed/updated. Select your apps and click RUN again." ok
-        return
-    } catch {
-        Write-WMLog "Official module method failed ($_); trying direct download..." warn
-    }
-
-    # Fallback: download the App Installer bundle and its dependencies directly.
+    # Primary: download the App Installer bundle + dependencies directly (light,
+    # no PowerShell module install).
     $tmp = $env:TEMP
     try {
         Write-WMLog "Downloading VCLibs dependency..." step
@@ -751,7 +739,20 @@ function Invoke-WMWingetReinstall {
         $bundle = Join-Path $tmp 'winget.msixbundle'
         Invoke-WebRequest 'https://aka.ms/getwinget' -OutFile $bundle -UseBasicParsing -ErrorAction Stop
         Add-AppxPackage $bundle -ErrorAction Stop
-        Write-WMLog "winget installed/updated. Select your apps and click RUN again." ok
+        if (Resolve-WMWinget) { Write-WMLog "winget installed." ok; return }
+        Write-WMLog "Bundle installed but winget still not resolved; trying module method..." warn
+    } catch {
+        Write-WMLog "Direct download failed ($_); trying the official module method..." warn
+    }
+
+    # Fallback: the official Microsoft.WinGet.Client module (same as WinUtil).
+    try {
+        Write-WMLog "Installing NuGet provider + Microsoft.WinGet.Client module..." step
+        Install-PackageProvider -Name NuGet -Force -ErrorAction Stop | Out-Null
+        Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery -ErrorAction Stop
+        Write-WMLog "Running Repair-WinGetPackageManager..." step
+        Repair-WinGetPackageManager -AllUsers -Latest -ErrorAction Stop
+        Write-WMLog "winget installed/updated." ok
     } catch {
         Write-WMLog "Automatic install failed: $_" err
         Write-WMLog "Opening App Installer in the Microsoft Store..." step
@@ -1302,7 +1303,7 @@ $BtnImport.Add_Click({
 })
 
 # Build the initial-session-state for the worker runspace: inject all engine functions.
-$engineFns = Get-ChildItem Function:\ | Where-Object { $_.Name -match 'WM' -and $_.Name -ne 'Resolve-WMWinget' }
+$engineFns = Get-ChildItem Function:\ | Where-Object { $_.Name -match 'WM' }
 $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
 foreach ($fn in $engineFns) {
     $iss.Commands.Add(
@@ -1341,17 +1342,6 @@ function Start-WMRunItems {
     # up without restarting the app.
     $script:Winget = Resolve-WMWinget
 
-    # Single, clear winget check: if it's missing, drop app installs (which would
-    # all fail) and tell the user once where to fix it.
-    if (-not $script:Winget) {
-        $appItems = @($Items | Where-Object { $_.Type -eq 'app' })
-        if ($appItems.Count) {
-            Write-Host "winget is not available - skipping $($appItems.Count) app install(s). Use Config > Fixes > 'WinGet - Install / Update' first." -ForegroundColor Yellow
-            $Items = @($Items | Where-Object { $_.Type -ne 'app' })
-            if (-not $Items.Count) { return }
-        }
-    }
-
     $sync.Running = $true
     $BtnRun.Content = if ($Mode -eq 'undo') { 'Undoing...' } else { 'Running...' }
     $BtnRun.IsEnabled = $false; $BtnUndo.IsEnabled = $false
@@ -1369,6 +1359,16 @@ function Start-WMRunItems {
         # progress bar; disabling it speeds downloads up by 10-50x.
         $ProgressPreference = 'SilentlyContinue'
         try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+
+        # Always ensure winget is working before installing apps: if any app is
+        # selected and winget is missing, install it first, then re-resolve.
+        if ($mode -eq 'apply' -and (@($items | Where-Object { $_.Type -eq 'app' }).Count) -and -not $Winget) {
+            Write-WMLog "winget not detected; installing it before app installs..." step
+            Invoke-WMWingetReinstall
+            $global:Winget = Resolve-WMWinget
+            if ($Winget) { Write-WMLog "winget ready." ok } else { Write-WMLog "winget still unavailable; app installs may fail." warn }
+        }
+
         $tweaked = $false
         foreach ($it in $items) {
             try {
