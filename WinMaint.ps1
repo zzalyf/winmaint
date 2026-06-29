@@ -129,7 +129,7 @@ function Resolve-WMWinget {
 $Winget = Resolve-WMWinget
 
 # System manufacturer, used to show only the matching OEM tool in the UI.
-$WMManufacturer = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).Manufacturer
+$WMManufacturer = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).Manufacturer
 
 # ============================================================
 #  ENGINE FUNCTIONS  (run inside the worker runspace)
@@ -155,13 +155,13 @@ function Write-WMLog {
 function Invoke-WMSystemSummary {
     Write-WMLog "SYSTEM SUMMARY" head
     try {
-        $cs      = Get-WmiObject Win32_ComputerSystem
-        $os      = Get-WmiObject Win32_OperatingSystem
-        $bios    = Get-WmiObject Win32_BIOS
-        $cpu     = Get-WmiObject Win32_Processor | Select-Object -First 1
-        $disks   = Get-WmiObject Win32_DiskDrive
-        $ram     = Get-WmiObject Win32_PhysicalMemory
-        $volumes = Get-WmiObject Win32_LogicalDisk | Where-Object { $_.DriveType -eq 3 }
+        $cs      = Get-CimInstance Win32_ComputerSystem
+        $os      = Get-CimInstance Win32_OperatingSystem
+        $bios    = Get-CimInstance Win32_BIOS
+        $cpu     = Get-CimInstance Win32_Processor | Select-Object -First 1
+        $disks   = Get-CimInstance Win32_DiskDrive
+        $ram     = Get-CimInstance Win32_PhysicalMemory
+        $volumes = Get-CimInstance Win32_LogicalDisk | Where-Object { $_.DriveType -eq 3 }
 
         $totalRAM   = [math]::Round(($cs.TotalPhysicalMemory / 1GB), 1)
         $winVersion = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction SilentlyContinue).DisplayVersion
@@ -189,7 +189,7 @@ function Invoke-WMSystemSummary {
             $pctFree = if ($vol.Size -gt 0) { [math]::Round(($vol.FreeSpace / $vol.Size) * 100, 0) } else { 0 }
             Write-WMLog "  $($vol.DeviceID)  $usedGB / $totalGB GB used  ($freeGB GB free, $pctFree% free)"
         }
-        $nics = Get-WmiObject Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true }
+        $nics = Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true }
         Write-WMLog "Network (active):"
         foreach ($nic in $nics) {
             $ip  = ($nic.IPAddress | Where-Object { $_ -match "\." } | Select-Object -First 1)
@@ -463,30 +463,38 @@ function Install-WMApp {
 # --- Updates -------------------------------------------------
 function Invoke-WMWindowsUpdate {
     Write-WMLog "WINDOWS UPDATE" head
-    if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
-        Write-WMLog "Installing PSWindowsUpdate module..." step
-        try { Install-Module PSWindowsUpdate -Force -Scope AllUsers -ErrorAction Stop; Write-WMLog "PSWindowsUpdate installed." ok }
-        catch { Write-WMLog "Could not install PSWindowsUpdate: $_" warn }
-    }
+    # Primary: the built-in COM API, installing update-by-update so progress is
+    # visible (download/install per title) instead of a silent wait.
     try {
-        Import-Module PSWindowsUpdate -ErrorAction Stop
-        $updates = Get-WindowsUpdate -AcceptAll -IgnoreReboot -ErrorAction Stop
-        if ($updates) {
-            Write-WMLog "$($updates.Count) update(s) found. Installing..." step
-            Install-WindowsUpdate -AcceptAll -IgnoreReboot -AutoReboot:$false | Out-Null
-            Write-WMLog "Updates installed. A reboot may be required." ok
-        } else { Write-WMLog "Windows is up to date." ok }
+        $session = New-Object -ComObject Microsoft.Update.Session
+        Write-WMLog "Searching for updates..." step
+        $res = $session.CreateUpdateSearcher().Search("IsInstalled=0 and Type='Software'")
+        $tot = $res.Updates.Count
+        if ($tot -eq 0) { Write-WMLog "Windows is up to date." ok; return }
+        Write-WMLog "$tot update(s) found:" step
+        for ($i = 0; $i -lt $tot; $i++) { Write-WMLog "  - $($res.Updates.Item($i).Title)" }
+        for ($i = 0; $i -lt $tot; $i++) {
+            $u = $res.Updates.Item($i)
+            if (-not $u.EulaAccepted) { try { $u.AcceptEula() } catch {} }
+            $coll = New-Object -ComObject Microsoft.Update.UpdateColl
+            $coll.Add($u) | Out-Null
+            Write-WMLog "[$($i + 1)/$tot] Downloading: $($u.Title)" step
+            $dl = $session.CreateUpdateDownloader(); $dl.Updates = $coll; $dl.Download() | Out-Null
+            Write-WMLog "[$($i + 1)/$tot] Installing: $($u.Title)" step
+            $ins = $session.CreateUpdateInstaller(); $ins.Updates = $coll
+            $r = $ins.Install()
+            $st = if ($r.ResultCode -eq 2) { 'installed' } else { "result code $($r.ResultCode)" }
+            Write-WMLog "[$($i + 1)/$tot] $($u.Title) -> $st" ok
+        }
+        Write-WMLog "Windows Update complete. A reboot may be required." ok
     } catch {
-        Write-WMLog "PSWindowsUpdate failed, trying COM... ($_)" warn
+        Write-WMLog "COM update failed ($_); trying PSWindowsUpdate..." warn
         try {
-            $wu = New-Object -ComObject Microsoft.Update.Session
-            $res = $wu.CreateUpdateSearcher().Search("IsInstalled=0 and Type='Software'")
-            if ($res.Updates.Count -eq 0) { Write-WMLog "No pending updates." ok }
-            else {
-                $dl = $wu.CreateUpdateDownloader(); $dl.Updates = $res.Updates; $dl.Download() | Out-Null
-                $ins = $wu.CreateUpdateInstaller(); $ins.Updates = $res.Updates; $ins.Install() | Out-Null
-                Write-WMLog "Installed $($res.Updates.Count) update(s) via COM." ok
-            }
+            if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) { Install-Module PSWindowsUpdate -Force -Scope AllUsers -ErrorAction Stop }
+            Import-Module PSWindowsUpdate -ErrorAction Stop
+            Install-WindowsUpdate -AcceptAll -IgnoreReboot -AutoReboot:$false -Verbose 4>&1 |
+                ForEach-Object { $l = "$_".Trim(); if ($l) { Write-WMLog $l } }
+            Write-WMLog "Updates installed. A reboot may be required." ok
         } catch { Write-WMLog "Windows Update failed: $_" err }
     }
 }
@@ -534,7 +542,7 @@ function Invoke-WMWingetUpgradeAll {
 
 function Invoke-WMLenovoVantage {
     Write-WMLog "LENOVO VANTAGE" head
-    $mfr = (Get-WmiObject Win32_ComputerSystem).Manufacturer
+    $mfr = (Get-CimInstance Win32_ComputerSystem).Manufacturer
     if ($mfr -notmatch "Lenovo") { Write-WMLog "Manufacturer '$mfr' - skipped (Lenovo only)." warn; return }
     if (-not $Winget) { Write-WMLog "winget unavailable." warn; return }
     # Lenovo Vantage is a UWP app; detect via Appx package.
@@ -557,7 +565,7 @@ function Invoke-WMLenovoVantage {
 
 function Invoke-WMHPSupport {
     Write-WMLog "HP SUPPORT ASSISTANT" head
-    $mfr = (Get-WmiObject Win32_ComputerSystem).Manufacturer
+    $mfr = (Get-CimInstance Win32_ComputerSystem).Manufacturer
     if ($mfr -notmatch "HP|Hewlett") { Write-WMLog "Manufacturer '$mfr' - skipped (HP only)." warn; return }
     if (-not $Winget) { Write-WMLog "winget unavailable." warn; return }
     # The HP Support Assistant UI is opened by HPSALauncher.exe (under
@@ -594,7 +602,7 @@ function Invoke-WMHPSupport {
 
 function Invoke-WMDellCommandUpdate {
     Write-WMLog "DELL COMMAND | UPDATE" head
-    $mfr = (Get-WmiObject Win32_ComputerSystem).Manufacturer
+    $mfr = (Get-CimInstance Win32_ComputerSystem).Manufacturer
     if ($mfr -notmatch "Dell") { Write-WMLog "Manufacturer '$mfr' - skipped (Dell only)." warn; return }
     if (-not $Winget) { Write-WMLog "winget unavailable." warn; return }
     if (Test-WMInstalledName "*Dell Command*Update*") {
@@ -777,6 +785,14 @@ function Invoke-WMRestorePoint {
         Checkpoint-Computer -Description "WinMaint $(Get-Date -Format 'yyyy-MM-dd HH:mm')" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
         Write-WMLog "Restore point created." ok
     } catch { Write-WMLog "Could not create restore point (System Protection may be off): $_" err }
+}
+
+function Invoke-WMRestartExplorer {
+    Write-WMLog "RESTART EXPLORER" head
+    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+    if (-not (Get-Process -Name explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe }
+    Write-WMLog "Explorer restarted." ok
 }
 
 function Invoke-WMOpenReports {
@@ -1065,6 +1081,7 @@ $Config = [ordered]@{
         @{ Type = 'fn'; Category = 'Fixes'; Label = 'Network - Reset';                     Action = 'Invoke-WMNetworkReset' }
         @{ Type = 'fn'; Category = 'Fixes'; Label = 'WinGet - Reinstall / Repair';         Action = 'Invoke-WMWingetReinstall' }
         @{ Type = 'fn'; Category = 'Fixes'; Label = 'Time Sync (NTP) - Enable';            Action = 'Invoke-WMEnableNtp' }
+        @{ Type = 'fn'; Category = 'Fixes'; Label = 'Restart Explorer';                    Action = 'Invoke-WMRestartExplorer' }
         # Legacy Windows Panels
         @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Control Panel';        Action = 'Invoke-WMControlPanel' }
         @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Network Connections';  Action = 'Invoke-WMNetworkPanel' }
@@ -1463,9 +1480,8 @@ function Start-WMRunItems {
                 $done++
             } catch { $failed++; Write-WMLog "Error in $($it.Label): $_" err }
         }
-        if ($tweaked -and $restart) {
-            Write-WMLog "Restarting Explorer to apply changes..." step
-            Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+        if ($tweaked) {
+            Write-WMLog "Some changes need an Explorer restart or sign-out to show. Use Config > Fixes > 'Restart Explorer' when ready." warn
         }
         $lvl = if ($failed) { 'warn' } else { 'ok' }
         Write-WMLog "Summary: $done item(s) processed, $failed error(s)." $lvl
