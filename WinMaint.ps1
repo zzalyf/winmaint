@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.06.29-r3'   # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.06.29-r4'   # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -397,11 +397,26 @@ function Invoke-WMCleanup {
 # PowerShell instance's pipeline, so we capture it and re-emit through Write-WMLog
 # (console + file). We drop the block-character progress bars and spinner frames
 # so we keep useful status (Downloading / Successfully installed) without "walls".
+# Uniform runner for native commands (winget / sfc / DISM ...). Captures output
+# and logs only meaningful text, dropping carriage-return progress bars, spinner
+# frames and bare percentage lines so the themed console stays clean (no "walls",
+# no colored progress blocks).
+function Invoke-WMConsole {
+    param([string]$File, [string[]]$Arguments)
+    $blockRe = '[' + [char]0x2580 + '-' + [char]0x259F + ']'
+    & $File @Arguments 2>&1 | ForEach-Object {
+        $l = ("$_").Trim()
+        if (-not $l) { return }
+        if ($l -match $blockRe)       { return }   # progress bar frames
+        if ($l -match '^[-\\|/]+$')   { return }   # spinner frames
+        if ($l -match '%')            { return }   # percentage progress lines
+        Write-WMLog $l
+    }
+}
+
 function Invoke-WMWinget {
     param([string[]]$A)
-    # Run winget attached to the current console (-NoNewWindow) instead of capturing
-    # it, so winget's own in-place progress bar renders cleanly (like WinUtil).
-    Start-Process -FilePath $Winget -ArgumentList $A -NoNewWindow -Wait
+    Invoke-WMConsole $Winget $A
 }
 
 # True if a winget package id is already installed on the machine.
@@ -714,18 +729,18 @@ function Invoke-WMFeature {
 function Invoke-WMSfcDism {
     Write-WMLog "SYSTEM CORRUPTION SCAN (SFC + DISM)" head
     Write-WMLog "Running sfc /scannow..." step
-    sfc /scannow 2>&1 | ForEach-Object { $l = "$_".Trim(); if ($l) { Write-WMLog $l } }
+    Invoke-WMConsole 'sfc.exe' @('/scannow')
     Write-WMLog "Running DISM /RestoreHealth..." step
-    DISM /Online /Cleanup-Image /RestoreHealth 2>&1 | ForEach-Object { $l = "$_".Trim(); if ($l) { Write-WMLog $l } }
+    Invoke-WMConsole 'DISM.exe' @('/Online', '/Cleanup-Image', '/RestoreHealth')
     Write-WMLog "System corruption scan complete." ok
 }
 
 function Invoke-WMNetworkReset {
     Write-WMLog "NETWORK RESET" head
     Write-WMLog "winsock + IP reset, flushing DNS..." step
-    netsh winsock reset 2>&1 | Out-Null
-    netsh int ip reset 2>&1 | Out-Null
-    ipconfig /flushdns 2>&1 | Out-Null
+    Invoke-WMConsole 'netsh.exe' @('winsock', 'reset')
+    Invoke-WMConsole 'netsh.exe' @('int', 'ip', 'reset')
+    Invoke-WMConsole 'ipconfig.exe' @('/flushdns')
     Write-WMLog "Network stack reset. Reboot recommended." ok
 }
 
