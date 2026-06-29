@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.06.29-r2'   # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.06.29-r3'   # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -89,6 +89,35 @@ function Set-CatppuccinConsole {
     } catch {}
 }
 Set-CatppuccinConsole
+
+# --- Console font size --------------------------------------
+function Set-WMConsoleFont {
+    param([int]$Size = 12, [string]$Face = 'Consolas')
+    try {
+        if (-not ('Win32Maint.ConsoleFont' -as [type])) {
+            Add-Type -Namespace Win32Maint -Name ConsoleFont -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct COORD { public short X; public short Y; }
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct CONSOLE_FONT_INFOEX {
+    public uint cbSize; public uint nFont; public COORD dwFontSize; public int FontFamily; public int FontWeight;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string FaceName;
+}
+[DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr GetStdHandle(int n);
+[DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetCurrentConsoleFontEx(IntPtr h, bool max, ref CONSOLE_FONT_INFOEX f);
+'@
+        }
+        $h = [Win32Maint.ConsoleFont]::GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        $info = New-Object Win32Maint.ConsoleFont+CONSOLE_FONT_INFOEX
+        $info.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($info)
+        $info.FontFamily = 54   # FF_MODERN | TMPF_TRUETYPE
+        $info.FontWeight = 400
+        $info.FaceName = $Face
+        $coord = New-Object Win32Maint.ConsoleFont+COORD
+        $coord.X = 0; $coord.Y = [short]$Size
+        $info.dwFontSize = $coord
+        [Win32Maint.ConsoleFont]::SetCurrentConsoleFontEx($h, $false, [ref]$info) | Out-Null
+    } catch {}
+}
+Set-WMConsoleFont 12
 
 # Decode native command output (e.g. winget) as UTF-8 so accented text is not
 # mangled (process-wide static; also re-applied inside the worker runspace).
@@ -327,9 +356,16 @@ function Invoke-WMEventLog {
 }
 
 function Invoke-WMCleanup {
-    Write-WMLog "CLEAN TEMPORARY FILES (system drive only)" head
+    Write-WMLog "CLEANUP (system drive only, silent)" head
     $sysDrive = $env:SystemDrive   # e.g. C:
-    $tempPaths = @($env:TEMP, $env:TMP, "$env:SystemRoot\Temp", "$env:LOCALAPPDATA\Temp")
+    # All on C:; cleaned by direct deletion (no cleanmgr window).
+    $tempPaths = @(
+        $env:TEMP, $env:TMP, "$env:SystemRoot\Temp", "$env:LOCALAPPDATA\Temp",
+        "$env:SystemRoot\Prefetch",
+        "$env:SystemRoot\SoftwareDistribution\Download",
+        "$env:ProgramData\Microsoft\Windows\DeliveryOptimization\Cache",
+        "$env:LOCALAPPDATA\Microsoft\Windows\Explorer"   # thumbnail/icon cache
+    )
     [long]$totalFreed = 0
     foreach ($path in ($tempPaths | Sort-Object -Unique)) {
         if (-not (Test-Path $path)) { continue }
@@ -346,18 +382,13 @@ function Invoke-WMCleanup {
             Write-WMLog "Cleaned (~$([math]::Round($size/1MB,1)) MB)" ok
         } catch { Write-WMLog "Partial clean on ${path}: $_" warn }
     }
-    Write-WMLog "Running silent Disk Cleanup..." step
-    $regPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches"
-    Get-ChildItem $regPath -ErrorAction SilentlyContinue | ForEach-Object {
-        Set-ItemProperty -Path $_.PSPath -Name "StateFlags0099" -Value 2 -ErrorAction SilentlyContinue
-    }
-    Start-Process "cleanmgr.exe" -ArgumentList "/sagerun:99" -Wait -ErrorAction SilentlyContinue
-    Write-WMLog "Disk Cleanup complete." ok
-    $prefetch = "$env:SystemRoot\Prefetch"
-    if (Test-Path $prefetch) {
-        try { Remove-Item "$prefetch\*" -Force -ErrorAction SilentlyContinue; Write-WMLog "Prefetch cleaned." ok }
-        catch { Write-WMLog "Could not clean Prefetch." warn }
-    }
+    # Recycle Bin (system drive), silent.
+    try { Clear-RecycleBin -DriveLetter $sysDrive.TrimEnd(':') -Force -ErrorAction Stop; Write-WMLog "Recycle Bin emptied." ok }
+    catch { Write-WMLog "Recycle Bin already empty or unavailable." }
+    # WinSxS component store cleanup - silent, no window.
+    Write-WMLog "Running component cleanup (DISM, silent)..." step
+    Dism.exe /Online /Cleanup-Image /StartComponentCleanup /Quiet 2>&1 | Out-Null
+    Write-WMLog "Component cleanup done." ok
     Write-WMLog "Total temp freed: ~$([math]::Round($totalFreed/1MB,1)) MB" ok
 }
 
@@ -368,14 +399,9 @@ function Invoke-WMCleanup {
 # so we keep useful status (Downloading / Successfully installed) without "walls".
 function Invoke-WMWinget {
     param([string[]]$A)
-    $blockRe = '[' + [char]0x2580 + '-' + [char]0x259F + ']'
-    & $Winget @A 2>&1 | ForEach-Object {
-        $l = ("$_").Trim()
-        if (-not $l) { return }
-        if ($l -match $blockRe)     { return }   # progress bar frames
-        if ($l -match '^[-\\|/]+$') { return }   # spinner frames
-        Write-WMLog $l
-    }
+    # Run winget attached to the current console (-NoNewWindow) instead of capturing
+    # it, so winget's own in-place progress bar renders cleanly (like WinUtil).
+    Start-Process -FilePath $Winget -ArgumentList $A -NoNewWindow -Wait
 }
 
 # True if a winget package id is already installed on the machine.
@@ -875,23 +901,56 @@ function Invoke-WMComputerMgmt    { Invoke-WMPanel 'compmgmt'; Write-WMLog "Open
 function Invoke-WMServicesPanel   { Invoke-WMPanel 'services'; Write-WMLog "Opened Services." ok }
 
 # --- Standard Maintenance: open CrystalDiskInfo -------------
-function Invoke-WMOpenCrystalDiskInfo {
-    Write-WMLog "CRYSTALDISKINFO" head
-    $paths = @(
-        "${env:ProgramFiles}\CrystalDiskInfo\DiskInfo64.exe",
-        "${env:ProgramFiles(x86)}\CrystalDiskInfo\DiskInfo64.exe",
-        "${env:ProgramFiles}\CrystalDiskInfo\DiskInfo32.exe",
-        "${env:ProgramFiles(x86)}\CrystalDiskInfo\DiskInfo32.exe"
-    )
-    $exe = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $exe -and $Winget) {
-        Write-WMLog "Not found; installing via winget..." step
-        Invoke-WMWinget @('install', '--id', 'CrystalDewWorld.CrystalDiskInfo', '--accept-package-agreements', '--accept-source-agreements', '--silent')
-        Start-Sleep -Seconds 3
-        $exe = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+# Open a tool: find its exe under Program Files; if missing, install via winget, then launch.
+function Invoke-WMOpenApp {
+    param($A)
+    Write-WMLog "OPEN: $($A.Label)" head
+    $find = {
+        Get-ChildItem -Path "$env:ProgramFiles", "${env:ProgramFiles(x86)}" -Recurse -Depth 4 -Filter '*.exe' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match $A.ExeMatch } | Select-Object -First 1
     }
-    if ($exe) { Start-Process $exe; Write-WMLog "CrystalDiskInfo opened." ok }
-    else { Write-WMLog "Could not locate CrystalDiskInfo." warn }
+    $exe = & $find
+    if (-not $exe -and $Winget -and $A.WingetId) {
+        Write-WMLog "Not found; installing $($A.Label)..." step
+        Invoke-WMWinget @('install', '--id', $A.WingetId, '--accept-package-agreements', '--accept-source-agreements', '--silent')
+        Start-Sleep -Seconds 3
+        $exe = & $find
+    }
+    if ($exe) { Start-Process $exe.FullName; Write-WMLog "$($A.Label) opened ($($exe.Name))." ok }
+    else { Write-WMLog "Could not locate $($A.Label). Install it from the Install tab." warn }
+}
+
+function Invoke-WMDefenderQuick {
+    Write-WMLog "WINDOWS DEFENDER - QUICK SCAN" head
+    try { Start-MpScan -ScanType QuickScan -ErrorAction Stop; Write-WMLog "Quick scan complete." ok }
+    catch { Write-WMLog "Defender scan failed: $_" err }
+}
+function Invoke-WMDefenderFull {
+    Write-WMLog "WINDOWS DEFENDER - FULL SCAN" head
+    Write-WMLog "Full scan can take a long time; the window stays responsive..." step
+    try { Start-MpScan -ScanType FullScan -ErrorAction Stop; Write-WMLog "Full scan complete." ok }
+    catch { Write-WMLog "Defender scan failed: $_" err }
+}
+
+function Invoke-WMCreateAdmin {
+    Write-WMLog "CREATE LOCAL ADMINISTRATOR (itadmin)" head
+    $u = 'itadmin'
+    $pw = ConvertTo-SecureString 'itadmin' -AsPlainText -Force
+    try {
+        if (Get-LocalUser -Name $u -ErrorAction SilentlyContinue) {
+            Set-LocalUser -Name $u -Password $pw -ErrorAction Stop
+            Write-WMLog "User '$u' already exists; password reset." ok
+        } else {
+            New-LocalUser -Name $u -Password $pw -FullName 'IT Admin' -Description 'Local admin (WinMaint)' -PasswordNeverExpires -AccountNeverExpires -ErrorAction Stop | Out-Null
+            Write-WMLog "User '$u' created." ok
+        }
+        # Administrators group name is localized; resolve it by well-known SID.
+        $grp = (Get-LocalGroup -SID 'S-1-5-32-544' -ErrorAction Stop).Name
+        if (-not (Get-LocalGroupMember -Group $grp -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*\$u" })) {
+            Add-LocalGroupMember -Group $grp -Member $u -ErrorAction Stop
+        }
+        Write-WMLog "'$u' is a member of '$grp'. Password: itadmin" ok
+    } catch { Write-WMLog "Could not create local admin: $_" err }
 }
 
 # ============================================================
@@ -1096,6 +1155,8 @@ $Config = [ordered]@{
         @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Devices and Printers'; Action = 'Invoke-WMPrintersPanel' }
         # Remote Access
         @{ Type = 'fn'; Category = 'Remote Access'; Label = 'OpenSSH Server - Enable'; Action = 'Invoke-WMEnableOpenSSH' }
+        # Local accounts
+        @{ Type = 'fn'; Category = 'Local Accounts'; Label = 'Create local admin (itadmin)'; Action = 'Invoke-WMCreateAdmin' }
         # DNS (applies to active physical adapters)
         @{ Type = 'fn'; Category = 'DNS'; Label = 'Cloudflare (1.1.1.1)'; Action = 'Invoke-WMDnsCloudflare' }
         @{ Type = 'fn'; Category = 'DNS'; Label = 'Google (8.8.8.8)';     Action = 'Invoke-WMDnsGoogle' }
@@ -1112,8 +1173,15 @@ $Config = [ordered]@{
         @{ Category = 'Updates'; Label = 'Dell Command | Update';            Action = 'Invoke-WMDellCommandUpdate'; Default = $false; OemMatch = 'Dell' }
         @{ Category = 'Updates'; Label = 'Intel Driver & Support Assistant'; Action = 'Invoke-WMIntelDSA';          Default = $false }
         @{ Category = 'Cleanup'; Label = 'Clean temp + Disk Cleanup + Prefetch (C: only)'; Action = 'Invoke-WMCleanup'; Default = $false }
-        @{ Category = 'Tools'; Control = 'button'; Type = 'fn'; Label = 'Open CrystalDiskInfo'; Action = 'Invoke-WMOpenCrystalDiskInfo' }
+        @{ Category = 'Tools'; Control = 'button'; Type = 'openapp'; Label = 'Open CrystalDiskInfo';   WingetId = 'CrystalDewWorld.CrystalDiskInfo'; ExeMatch = '^DiskInfo(64|32)\.exe$' }
+        @{ Category = 'Tools'; Control = 'button'; Type = 'openapp'; Label = 'Open HWiNFO64';          WingetId = 'REALiX.HWiNFO';                  ExeMatch = '^HWiNFO(64)?\.exe$' }
+        @{ Category = 'Tools'; Control = 'button'; Type = 'openapp'; Label = 'Open CPU-Z';             WingetId = 'CPUID.CPU-Z';                    ExeMatch = '^cpuz(_x64)?\.exe$' }
+        @{ Category = 'Tools'; Control = 'button'; Type = 'openapp'; Label = 'Open GPU-Z';             WingetId = 'TechPowerUp.GPU-Z';              ExeMatch = '^GPU-Z.*\.exe$' }
+        @{ Category = 'Tools'; Control = 'button'; Type = 'openapp'; Label = 'Open Angry IP Scanner';  WingetId = 'angryziber.AngryIPScanner';      ExeMatch = '^(Angry IP Scanner|ipscan).*\.exe$' }
         @{ Category = 'Tools'; Control = 'button'; Type = 'fn'; Label = 'Open reports folder';  Action = 'Invoke-WMOpenReports' }
+        # Windows Defender
+        @{ Category = 'Windows Defender'; Control = 'button'; Type = 'fn'; Label = 'Quick scan'; Action = 'Invoke-WMDefenderQuick' }
+        @{ Category = 'Windows Defender'; Control = 'button'; Type = 'fn'; Label = 'Full scan';  Action = 'Invoke-WMDefenderFull' }
     )
 }
 
@@ -1477,6 +1545,7 @@ function Start-WMRunItems {
                 elseif ($mode -eq 'apply') {
                     if ($it.Type -eq 'app')         { Install-WMApp $it }
                     elseif ($it.Type -eq 'debloat') { Invoke-WMDebloat $it }
+                    elseif ($it.Type -eq 'openapp') { Invoke-WMOpenApp $it }
                     else { & $it.Action }
                 } else { continue }
                 $done++
