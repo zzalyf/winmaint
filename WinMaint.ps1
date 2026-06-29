@@ -621,8 +621,111 @@ function Invoke-WMTweak {
             else        { Set-Service -Name $svc -StartupType Automatic -ErrorAction SilentlyContinue; Start-Service -Name $svc -ErrorAction SilentlyContinue }
         } catch { Write-WMLog "  service ${svc}: $_" warn }
     }
+    # Optional script bodies (for tweaks that aren't pure registry/service).
+    $scr = if ($apply) { $T.ApplyScript } else { $T.UndoScript }
+    if ($scr) { try { Invoke-Expression $scr } catch { Write-WMLog "  script: $_" warn } }
     Write-WMLog "$($T.Label): $(if ($apply) {'applied'} else {'reverted'})." ok
 }
+
+# --- Config: Windows optional features (DISM) ---------------
+function Invoke-WMFeature {
+    param($F, [string]$Mode)
+    $apply = ($Mode -ne 'undo')
+    Write-WMLog "$($F.Label) [$Mode]" step
+    foreach ($name in $F.Feature) {
+        try {
+            if ($apply) { Enable-WindowsOptionalFeature -Online -FeatureName $name -All -NoRestart -ErrorAction Stop | Out-Null }
+            else        { Disable-WindowsOptionalFeature -Online -FeatureName $name -NoRestart -ErrorAction Stop | Out-Null }
+        } catch { Write-WMLog "  feature ${name}: $_" warn }
+    }
+    Write-WMLog "$($F.Label): $(if ($apply) {'enabled'} else {'disabled'}). Reboot may be required." ok
+}
+
+# --- Config: Fixes ------------------------------------------
+function Invoke-WMSfcDism {
+    Write-WMLog "SYSTEM CORRUPTION SCAN (SFC + DISM)" head
+    Write-WMLog "Running sfc /scannow..." step
+    sfc /scannow 2>&1 | ForEach-Object { $l = "$_".Trim(); if ($l) { Write-WMLog $l } }
+    Write-WMLog "Running DISM /RestoreHealth..." step
+    DISM /Online /Cleanup-Image /RestoreHealth 2>&1 | ForEach-Object { $l = "$_".Trim(); if ($l) { Write-WMLog $l } }
+    Write-WMLog "System corruption scan complete." ok
+}
+
+function Invoke-WMNetworkReset {
+    Write-WMLog "NETWORK RESET" head
+    Write-WMLog "winsock + IP reset, flushing DNS..." step
+    netsh winsock reset 2>&1 | Out-Null
+    netsh int ip reset 2>&1 | Out-Null
+    ipconfig /flushdns 2>&1 | Out-Null
+    Write-WMLog "Network stack reset. Reboot recommended." ok
+}
+
+function Invoke-WMWUReset {
+    Write-WMLog "WINDOWS UPDATE RESET" head
+    try {
+        Write-WMLog "Stopping update services..." step
+        'wuauserv', 'cryptSvc', 'bits', 'msiserver' | ForEach-Object { Stop-Service -Name $_ -Force -ErrorAction SilentlyContinue }
+        $ts = Get-Date -Format 'yyyyMMddHHmmss'
+        Rename-Item "$env:SystemRoot\SoftwareDistribution" "SoftwareDistribution.$ts" -ErrorAction SilentlyContinue
+        Rename-Item "$env:SystemRoot\System32\catroot2" "catroot2.$ts" -ErrorAction SilentlyContinue
+        Write-WMLog "Restarting update services..." step
+        'wuauserv', 'cryptSvc', 'bits', 'msiserver' | ForEach-Object { Start-Service -Name $_ -ErrorAction SilentlyContinue }
+        Write-WMLog "Windows Update components reset." ok
+    } catch { Write-WMLog "Windows Update reset failed: $_" err }
+}
+
+function Invoke-WMWingetReinstall {
+    Write-WMLog "REINSTALL / REPAIR WINGET (App Installer)" head
+    try {
+        Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe -ErrorAction Stop
+        Write-WMLog "App Installer re-registered." ok
+    } catch {
+        Write-WMLog "Re-register failed, opening Store page..." warn
+        Start-Process "ms-windows-store://pdp/?productid=9NBLGGH4NNS1"
+    }
+}
+
+function Invoke-WMEnableNtp {
+    Write-WMLog "ENABLE TIME SYNC (NTP)" head
+    sc.exe config w32time start= auto 2>&1 | Out-Null
+    Start-Service w32time -ErrorAction SilentlyContinue
+    w32tm /resync 2>&1 | ForEach-Object { $l = "$_".Trim(); if ($l) { Write-WMLog $l } }
+    Write-WMLog "Time sync enabled." ok
+}
+
+function Invoke-WMEnableOpenSSH {
+    Write-WMLog "ENABLE OPENSSH SERVER" head
+    try {
+        Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction Stop | Out-Null
+        Set-Service sshd -StartupType Automatic -ErrorAction SilentlyContinue
+        Start-Service sshd -ErrorAction SilentlyContinue
+        Write-WMLog "OpenSSH Server enabled and started." ok
+    } catch { Write-WMLog "Could not enable OpenSSH Server: $_" err }
+}
+
+# --- Config: Legacy panels (open built-in tools) ------------
+function Invoke-WMPanel {
+    param([string]$What)
+    switch ($What) {
+        'control'   { Start-Process control.exe }
+        'ncpa'      { Start-Process control.exe -ArgumentList 'ncpa.cpl' }
+        'powercfg'  { Start-Process control.exe -ArgumentList 'powercfg.cpl' }
+        'mmsys'     { Start-Process control.exe -ArgumentList 'mmsys.cpl' }
+        'sysdm'     { Start-Process control.exe -ArgumentList 'sysdm.cpl' }
+        'devmgmt'   { Start-Process devmgmt.msc }
+        'compmgmt'  { Start-Process compmgmt.msc }
+        'services'  { Start-Process services.msc }
+        'cleanmgr'  { Start-Process cleanmgr.exe }
+    }
+}
+function Invoke-WMControlPanel    { Invoke-WMPanel 'control';  Write-WMLog "Opened Control Panel." ok }
+function Invoke-WMNetworkPanel    { Invoke-WMPanel 'ncpa';     Write-WMLog "Opened Network Connections." ok }
+function Invoke-WMPowerPanel      { Invoke-WMPanel 'powercfg'; Write-WMLog "Opened Power Options." ok }
+function Invoke-WMSoundPanel      { Invoke-WMPanel 'mmsys';    Write-WMLog "Opened Sound Settings." ok }
+function Invoke-WMSystemPanel     { Invoke-WMPanel 'sysdm';    Write-WMLog "Opened System Properties." ok }
+function Invoke-WMDeviceManager   { Invoke-WMPanel 'devmgmt';  Write-WMLog "Opened Device Manager." ok }
+function Invoke-WMComputerMgmt    { Invoke-WMPanel 'compmgmt'; Write-WMLog "Opened Computer Management." ok }
+function Invoke-WMServicesPanel   { Invoke-WMPanel 'services'; Write-WMLog "Opened Services." ok }
 
 # ============================================================
 #  CONFIG  -  drives the checkboxes per tab.
@@ -768,6 +871,45 @@ $Config = [ordered]@{
            Reg = @(@{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'; Name = 'VerboseStatus'; On = 1; Off = 0; Kind = 'DWord' }) }
         @{ Type = 'tweak'; Category = 'Preferences'; Label = 'NumLock on startup';
            Reg = @(@{ Path = 'HKCU:\Control Panel\Keyboard'; Name = 'InitialKeyboardIndicators'; On = '2'; Off = '0'; Kind = 'String' }) }
+
+        # --- Advanced Tweaks (CAUTION) ---
+        @{ Type = 'tweak'; Category = 'Advanced Tweaks (CAUTION)'; Label = 'Disable Hibernation';
+           ApplyScript = 'powercfg /hibernate off'; UndoScript = 'powercfg /hibernate on' }
+        @{ Type = 'tweak'; Category = 'Advanced Tweaks (CAUTION)'; Label = 'Set system clock to UTC (dual-boot)';
+           Reg = @(@{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation'; Name = 'RealTimeIsUniversal'; On = 1; Off = 0; Kind = 'QWord' }) }
+        @{ Type = 'tweak'; Category = 'Advanced Tweaks (CAUTION)'; Label = 'Disable Fullscreen Optimizations';
+           Reg = @(@{ Path = 'HKCU:\System\GameConfigStore'; Name = 'GameDVR_DXGIHonorFSEWindowsCompatible'; On = 1; Off = 0; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Advanced Tweaks (CAUTION)'; Label = 'Disable Sticky Keys shortcut';
+           Reg = @(@{ Path = 'HKCU:\Control Panel\Accessibility\StickyKeys'; Name = 'Flags'; On = '506'; Off = '58'; Kind = 'String' }) }
+        @{ Type = 'tweak'; Category = 'Advanced Tweaks (CAUTION)'; Label = 'Detailed BSoD information';
+           Reg = @(@{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'; Name = 'DisplayParameters'; On = 1; Off = 0; Kind = 'DWord' }) }
+    )
+    Config  = @(
+        # Features (DISM optional features)
+        @{ Type = 'feature'; Category = 'Features'; Label = '.NET Framework 3.5';        Feature = @('NetFx3') }
+        @{ Type = 'feature'; Category = 'Features'; Label = 'Hyper-V';                    Feature = @('Microsoft-Hyper-V-All') }
+        @{ Type = 'feature'; Category = 'Features'; Label = 'WSL (Linux subsystem)';      Feature = @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform') }
+        @{ Type = 'feature'; Category = 'Features'; Label = 'Windows Sandbox';            Feature = @('Containers-DisposableClientVM') }
+        @{ Type = 'feature'; Category = 'Features'; Label = 'Telnet Client';              Feature = @('TelnetClient') }
+        @{ Type = 'feature'; Category = 'Features'; Label = 'Legacy Media (DirectPlay)';  Feature = @('DirectPlay') }
+        @{ Type = 'feature'; Category = 'Features'; Label = 'NFS Client';                 Feature = @('ServicesForNFS-ClientOnly', 'ClientForNFS-Infrastructure') }
+        # Fixes
+        @{ Type = 'fn'; Category = 'Fixes'; Label = 'System Corruption Scan (SFC + DISM)'; Action = 'Invoke-WMSfcDism' }
+        @{ Type = 'fn'; Category = 'Fixes'; Label = 'Windows Update - Reset';              Action = 'Invoke-WMWUReset' }
+        @{ Type = 'fn'; Category = 'Fixes'; Label = 'Network - Reset';                     Action = 'Invoke-WMNetworkReset' }
+        @{ Type = 'fn'; Category = 'Fixes'; Label = 'WinGet - Reinstall / Repair';         Action = 'Invoke-WMWingetReinstall' }
+        @{ Type = 'fn'; Category = 'Fixes'; Label = 'Time Sync (NTP) - Enable';            Action = 'Invoke-WMEnableNtp' }
+        # Legacy Windows Panels
+        @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Control Panel';        Action = 'Invoke-WMControlPanel' }
+        @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Network Connections';  Action = 'Invoke-WMNetworkPanel' }
+        @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Power Options';        Action = 'Invoke-WMPowerPanel' }
+        @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Sound Settings';       Action = 'Invoke-WMSoundPanel' }
+        @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'System Properties';    Action = 'Invoke-WMSystemPanel' }
+        @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Device Manager';       Action = 'Invoke-WMDeviceManager' }
+        @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Computer Management';  Action = 'Invoke-WMComputerMgmt' }
+        @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Services';             Action = 'Invoke-WMServicesPanel' }
+        # Remote Access
+        @{ Type = 'fn'; Category = 'Remote Access'; Label = 'OpenSSH Server - Enable'; Action = 'Invoke-WMEnableOpenSSH' }
     )
     Updates = @(
         @{ Key = 'wu';     Label = 'Windows Update';                 Action = 'Invoke-WMWindowsUpdate';  Default = $false }
@@ -864,6 +1006,7 @@ $xaml = @'
       <TabItem Header="Diagnostics"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Diagnostics" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Install"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Install" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Tweaks"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Tweaks" Margin="10"/></ScrollViewer></TabItem>
+      <TabItem Header="Config"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Config" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Updates"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Updates" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Cleanup"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Cleanup" Margin="10"/></ScrollViewer></TabItem>
     </TabControl>
@@ -980,7 +1123,8 @@ function Start-WMRun {
         $tweaked = $false
         foreach ($it in $items) {
             try {
-                if ($it.Type -eq 'tweak') { $tweaked = $true; Invoke-WMTweak $it $mode }
+                if ($it.Type -eq 'tweak')        { $tweaked = $true; Invoke-WMTweak $it $mode }
+                elseif ($it.Type -eq 'feature')  { Invoke-WMFeature $it $mode }
                 elseif ($mode -eq 'apply') {
                     if ($it.Type -eq 'app') { Install-WMApp $it }
                     else { & $it.Action }
