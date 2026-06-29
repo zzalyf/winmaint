@@ -102,6 +102,7 @@ $InventoryFile = Join-Path $WMRoot 'Inventory.csv'
 # --- Shared state between UI thread and worker runspace -----
 $sync = [hashtable]::Synchronized(@{})
 $sync.Running    = $false
+$sync.Status     = 'Ready'
 $sync.LogFile    = $LogFile
 $sync.Inventory  = $InventoryFile
 
@@ -153,7 +154,8 @@ function Write-WMLog {
     $line = "$prefix$Text"
     $color = switch ($Level) { 'head' { 'Cyan' } 'step' { 'Yellow' } 'ok' { 'Green' } 'warn' { 'Magenta' } 'err' { 'Red' } default { 'Gray' } }
     Write-Host $line -ForegroundColor $color
-    try { Add-Content -Path $sync.LogFile -Value $line -ErrorAction SilentlyContinue } catch {}
+    $sync.Status = $Text   # surfaced in the window status bar by the UI timer
+    try { Add-Content -Path $sync.LogFile -Value ("[{0:HH:mm:ss}]{1}" -f (Get-Date), $line) -ErrorAction SilentlyContinue } catch {}
 }
 
 function Invoke-WMSystemSummary {
@@ -1033,6 +1035,7 @@ foreach ($k in $Config.Keys) {
                 default         { 'check' }
             }
         }
+        if (-not $item.Id) { $item.Id = "$k|$($item.Label)" }   # stable key for profiles
     }
 }
 
@@ -1130,12 +1133,17 @@ $xaml = @'
     </Border>
 
     <Border DockPanel.Dock="Bottom" Background="#181825">
-      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="10">
-        <Button x:Name="BtnAll"   Content="Selecionar tudo" Background="#45475A" Foreground="#CDD6F4"/>
-        <Button x:Name="BtnNone"  Content="Limpar"          Background="#45475A" Foreground="#CDD6F4"/>
-        <Button x:Name="BtnUndo"  Content="Undo tweaks"     Background="#45475A" Foreground="#CDD6F4"/>
-        <Button x:Name="BtnRun"   Content="RUN"             Width="120"/>
-      </StackPanel>
+      <Grid Margin="10,8">
+        <TextBlock x:Name="StatusText" Text="Ready" Foreground="#A6ADC8" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Left" TextTrimming="CharacterEllipsis" MaxWidth="520"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+          <Button x:Name="BtnImport" Content="Import" Background="#45475A" Foreground="#CDD6F4"/>
+          <Button x:Name="BtnExport" Content="Export" Background="#45475A" Foreground="#CDD6F4"/>
+          <Button x:Name="BtnAll"   Content="Selecionar tudo" Background="#45475A" Foreground="#CDD6F4"/>
+          <Button x:Name="BtnNone"  Content="Limpar"          Background="#45475A" Foreground="#CDD6F4"/>
+          <Button x:Name="BtnUndo"  Content="Undo tweaks"     Background="#45475A" Foreground="#CDD6F4"/>
+          <Button x:Name="BtnRun"   Content="RUN"             Width="110"/>
+        </StackPanel>
+      </Grid>
     </Border>
 
     <TabControl x:Name="Tabs" Background="#1E1E2E" BorderThickness="0" Margin="8">
@@ -1220,6 +1228,31 @@ foreach ($tab in $Config.Keys) {
             }
             $wrap.Children.Add($col) | Out-Null
         }
+        # Search box for the Install tab (filters checkboxes by label).
+        if ($tab -eq 'Install') {
+            $search = New-Object System.Windows.Controls.TextBox
+            $search.Margin = '4,0,4,10'; $search.Padding = '6,4'; $search.FontSize = 13
+            $search.Background = '#313244'; $search.Foreground = '#CDD6F4'; $search.BorderThickness = 0
+            $search.Tag = $wrap
+            $search.Add_GotFocus({ if ($this.Text -eq 'Search apps...') { $this.Text = '' } })
+            $search.Add_TextChanged({
+                $q = $this.Text.Trim()
+                if ($q -eq 'Search apps...') { $q = '' }
+                foreach ($c in $this.Tag.Children) {
+                    $any = $false
+                    foreach ($ch in $c.Children) {
+                        if ($ch -is [System.Windows.Controls.CheckBox]) {
+                            $vis = ($q -eq '' -or "$($ch.Content)" -like "*$q*")
+                            $ch.Visibility = if ($vis) { 'Visible' } else { 'Collapsed' }
+                            if ($vis) { $any = $true }
+                        }
+                    }
+                    $c.Visibility = if ($any) { 'Visible' } else { 'Collapsed' }
+                }
+            })
+            $search.Text = 'Search apps...'
+            $panel.Children.Add($search) | Out-Null
+        }
         $panel.Children.Add($wrap) | Out-Null
         continue
     }
@@ -1238,9 +1271,35 @@ $BtnRun = $window.FindName('BtnRun')
 $BtnAll = $window.FindName('BtnAll')
 $BtnNone = $window.FindName('BtnNone')
 $BtnUndo = $window.FindName('BtnUndo')
+$BtnExport = $window.FindName('BtnExport')
+$BtnImport = $window.FindName('BtnImport')
+$StatusText = $window.FindName('StatusText')
 
 $BtnAll.Add_Click({ foreach ($c in $AllChecks) { $c.IsChecked = $true } })
 $BtnNone.Add_Click({ foreach ($c in $AllChecks) { $c.IsChecked = $false } })
+
+# Export / Import a selection profile (the checked checkbox items) as JSON.
+$BtnExport.Add_Click({
+    $dlg = New-Object Microsoft.Win32.SaveFileDialog
+    $dlg.Filter = 'JSON profile (*.json)|*.json'; $dlg.FileName = 'winmaint-profile.json'
+    if ($dlg.ShowDialog()) {
+        $ids = @($AllChecks | Where-Object { $_.IsChecked } | ForEach-Object { $_.Tag.Id })
+        ($ids | ConvertTo-Json) | Set-Content -Path $dlg.FileName -Encoding UTF8
+        Write-Host "Profile saved: $($dlg.FileName) ($($ids.Count) item(s))." -ForegroundColor Green
+    }
+})
+$BtnImport.Add_Click({
+    $dlg = New-Object Microsoft.Win32.OpenFileDialog
+    $dlg.Filter = 'JSON profile (*.json)|*.json'
+    if ($dlg.ShowDialog()) {
+        try {
+            $ids = @(Get-Content -Path $dlg.FileName -Raw | ConvertFrom-Json)
+            $set = @{}; foreach ($i in $ids) { $set["$i"] = $true }
+            foreach ($c in $AllChecks) { $c.IsChecked = [bool]$set["$($c.Tag.Id)"] }
+            Write-Host "Profile loaded: $($dlg.FileName)." -ForegroundColor Green
+        } catch { Write-Host "Could not load profile: $_" -ForegroundColor Red }
+    }
+})
 
 # Build the initial-session-state for the worker runspace: inject all engine functions.
 $engineFns = Get-ChildItem Function:\ | Where-Object { $_.Name -match 'WM' -and $_.Name -ne 'Resolve-WMWinget' }
@@ -1257,12 +1316,14 @@ $timer.Interval = [TimeSpan]::FromMilliseconds(200)
 $script:WMps = $null
 $script:WMhandle = $null
 $timer.Add_Tick({
+    if ($sync.Status) { $StatusText.Text = $sync.Status }
     if ($script:WMhandle -and $script:WMhandle.IsCompleted) {
         try { $script:WMps.EndInvoke($script:WMhandle) } catch {}
         $script:WMps.Runspace.Dispose(); $script:WMps.Dispose()
         $script:WMps = $null; $script:WMhandle = $null
         $sync.Running = $false
         $BtnRun.Content = 'RUN'; $BtnRun.IsEnabled = $true; $BtnUndo.IsEnabled = $true
+        $sync.Status = 'Done.'; $StatusText.Text = 'Done.'
         Write-Host "`r`n==== DONE ====`r`n" -ForegroundColor Green
     }
 })
@@ -1279,6 +1340,17 @@ function Start-WMRunItems {
     # Re-resolve winget each run so a repair/install during this session is picked
     # up without restarting the app.
     $script:Winget = Resolve-WMWinget
+
+    # Single, clear winget check: if it's missing, drop app installs (which would
+    # all fail) and tell the user once where to fix it.
+    if (-not $script:Winget) {
+        $appItems = @($Items | Where-Object { $_.Type -eq 'app' })
+        if ($appItems.Count) {
+            Write-Host "winget is not available - skipping $($appItems.Count) app install(s). Use Config > Fixes > 'WinGet - Install / Update' first." -ForegroundColor Yellow
+            $Items = @($Items | Where-Object { $_.Type -ne 'app' })
+            if (-not $Items.Count) { return }
+        }
+    }
 
     $sync.Running = $true
     $BtnRun.Content = if ($Mode -eq 'undo') { 'Undoing...' } else { 'Running...' }
