@@ -999,6 +999,7 @@ $Config = [ordered]@{
         @{ Type = 'app'; Category = 'Development'; Label = 'Python 3';             WingetId = 'Python.Python.3.13' }
         @{ Type = 'app'; Category = 'Development'; Label = 'Node.js (LTS)';        WingetId = 'OpenJS.NodeJS.LTS' }
         # Microsoft Tools
+        @{ Type = 'app'; Category = 'Microsoft Tools'; Label = 'PowerShell 7';              WingetId = 'Microsoft.PowerShell' }
         @{ Type = 'app'; Category = 'Microsoft Tools'; Label = 'OneDrive';                 WingetId = 'Microsoft.OneDrive' }
         @{ Type = 'app'; Category = 'Microsoft Tools'; Label = 'DISMTools';                WingetId = 'CodingWondersSoftware.DISMTools.Stable' }
         @{ Type = 'app'; Category = 'Microsoft Tools'; Label = '.NET Desktop Runtime 8';   WingetId = 'Microsoft.DotNet.DesktopRuntime.8' }
