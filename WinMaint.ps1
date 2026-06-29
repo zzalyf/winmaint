@@ -111,14 +111,21 @@ function Resolve-WMWinget {
     if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source) -and ((Get-Item $cmd.Source).Length -gt 0)) {
         return $cmd.Source
     }
-    # From the installed App Installer package (reliable in elevated sessions,
-    # where the per-user PATH alias is not available).
-    $pkg = Get-AppxPackage -Name 'Microsoft.DesktopAppInstaller' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($pkg -and $pkg.InstallLocation) {
-        $exe = Join-Path $pkg.InstallLocation 'winget.exe'
-        if (Test-Path $exe) { return $exe }
+    # From the App Installer package. Try -AllUsers first (an elevated/admin session
+    # does not see the logged-in user's per-user packages otherwise), then current user.
+    foreach ($all in @($true, $false)) {
+        try {
+            $pkgs = if ($all) { Get-AppxPackage -AllUsers -Name 'Microsoft.DesktopAppInstaller' -ErrorAction Stop }
+                    else      { Get-AppxPackage -Name 'Microsoft.DesktopAppInstaller' -ErrorAction Stop }
+            foreach ($pkg in $pkgs) {
+                if ($pkg.InstallLocation) {
+                    $exe = Join-Path $pkg.InstallLocation 'winget.exe'
+                    if (Test-Path $exe) { return $exe }
+                }
+            }
+        } catch {}
     }
-    Get-ChildItem "$env:ProgramFiles\WindowsApps" -Filter "Microsoft.DesktopAppInstaller_*__*" -Directory -ErrorAction SilentlyContinue |
+    Get-ChildItem "$env:ProgramFiles\WindowsApps" -Filter "Microsoft.DesktopAppInstaller_*" -Directory -ErrorAction SilentlyContinue |
         Sort-Object Name -Descending |
         ForEach-Object { Join-Path $_.FullName "winget.exe" } |
         Where-Object { Test-Path $_ } |
