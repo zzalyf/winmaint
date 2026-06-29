@@ -114,27 +114,16 @@ function Resolve-WMWinget {
     #    ("Access denied"), so the alias is strongly preferred.
     $alias = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\winget.exe'
     if (Test-Path $alias) { return $alias }
-    # 2) PATH lookup (works in a non-elevated session).
+    # 2) PATH lookup (works in a non-elevated session), but only accept a real
+    #    alias/exe, never a path we cannot execute.
     $cmd = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source)) { return $cmd.Source }
-    # 3) Last resort: the real exe from the installed package (may be ACL-restricted).
-    foreach ($all in @($false, $true)) {
-        try {
-            $pkgs = if ($all) { Get-AppxPackage -AllUsers -Name 'Microsoft.DesktopAppInstaller' -ErrorAction Stop }
-                    else      { Get-AppxPackage -Name 'Microsoft.DesktopAppInstaller' -ErrorAction Stop }
-            foreach ($pkg in $pkgs) {
-                if ($pkg.InstallLocation) {
-                    $exe = Join-Path $pkg.InstallLocation 'winget.exe'
-                    if (Test-Path $exe) { return $exe }
-                }
-            }
-        } catch {}
-    }
-    Get-ChildItem "$env:ProgramFiles\WindowsApps" -Filter "Microsoft.DesktopAppInstaller_*" -Directory -ErrorAction SilentlyContinue |
-        Sort-Object Name -Descending |
-        ForEach-Object { Join-Path $_.FullName "winget.exe" } |
-        Where-Object { Test-Path $_ } |
-        Select-Object -First 1
+    # Deliberately do NOT return the real winget.exe under Program Files\WindowsApps:
+    # executing it directly is ACL-blocked ("Access denied"). Returning it here would
+    # also make $Winget look "available" and suppress the auto-install. If no usable
+    # alias exists, return $null so the caller installs winget (which creates the
+    # current user's alias).
+    return $null
 }
 $Winget = Resolve-WMWinget
 
