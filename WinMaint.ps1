@@ -108,13 +108,16 @@ $sync.Inventory  = $InventoryFile
 
 # --- winget resolver (works in elevated session) ------------
 function Resolve-WMWinget {
+    # 1) The CURRENT user's App Execution Alias. Executing this 0-byte reparse
+    #    point launches the packaged winget in this user's context - the supported
+    #    way. Running the real winget.exe under WindowsApps directly is ACL-blocked
+    #    ("Access denied"), so the alias is strongly preferred.
+    $alias = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\winget.exe'
+    if (Test-Path $alias) { return $alias }
+    # 2) PATH lookup (works in a non-elevated session).
     $cmd = Get-Command winget.exe -ErrorAction SilentlyContinue
-    if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source) -and ((Get-Item $cmd.Source).Length -gt 0)) {
-        return $cmd.Source
-    }
-    # From the App Installer package. Try the CURRENT (elevated) user first: that
-    # package is executable by this process. Only then fall back to -AllUsers
-    # (another user's package may resolve but fail to run with "Access denied").
+    if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source)) { return $cmd.Source }
+    # 3) Last resort: the real exe from the installed package (may be ACL-restricted).
     foreach ($all in @($false, $true)) {
         try {
             $pkgs = if ($all) { Get-AppxPackage -AllUsers -Name 'Microsoft.DesktopAppInstaller' -ErrorAction Stop }
