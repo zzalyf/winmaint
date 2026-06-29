@@ -111,7 +111,14 @@ function Resolve-WMWinget {
     if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source) -and ((Get-Item $cmd.Source).Length -gt 0)) {
         return $cmd.Source
     }
-    Get-ChildItem "$env:ProgramFiles\WindowsApps" -Filter "Microsoft.DesktopAppInstaller_*_x64__*" -Directory -ErrorAction SilentlyContinue |
+    # From the installed App Installer package (reliable in elevated sessions,
+    # where the per-user PATH alias is not available).
+    $pkg = Get-AppxPackage -Name 'Microsoft.DesktopAppInstaller' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($pkg -and $pkg.InstallLocation) {
+        $exe = Join-Path $pkg.InstallLocation 'winget.exe'
+        if (Test-Path $exe) { return $exe }
+    }
+    Get-ChildItem "$env:ProgramFiles\WindowsApps" -Filter "Microsoft.DesktopAppInstaller_*__*" -Directory -ErrorAction SilentlyContinue |
         Sort-Object Name -Descending |
         ForEach-Object { Join-Path $_.FullName "winget.exe" } |
         Where-Object { Test-Path $_ } |
@@ -1226,6 +1233,10 @@ function Start-WMRunItems {
     param([object[]]$Items, [string]$Mode, [bool]$Restart)
     if ($sync.Running) { return }
     if (-not $Items -or $Items.Count -eq 0) { Write-Host "Nothing selected." -ForegroundColor Yellow; return }
+
+    # Re-resolve winget each run so a repair/install during this session is picked
+    # up without restarting the app.
+    $script:Winget = Resolve-WMWinget
 
     $sync.Running = $true
     $BtnRun.Content = if ($Mode -eq 'undo') { 'Undoing...' } else { 'Running...' }
