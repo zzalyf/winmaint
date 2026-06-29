@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.06.29-r5'   # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.06.29-r6'   # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -385,11 +385,18 @@ function Invoke-WMCleanup {
     # Recycle Bin (system drive), silent.
     try { Clear-RecycleBin -DriveLetter $sysDrive.TrimEnd(':') -Force -ErrorAction Stop; Write-WMLog "Recycle Bin emptied." ok }
     catch { Write-WMLog "Recycle Bin already empty or unavailable." }
-    # WinSxS component store cleanup - silent, no window.
-    Write-WMLog "Running component cleanup (DISM, silent)..." step
-    Dism.exe /Online /Cleanup-Image /StartComponentCleanup /Quiet 2>&1 | Out-Null
-    Write-WMLog "Component cleanup done." ok
-    Write-WMLog "Total temp freed: ~$([math]::Round($totalFreed/1MB,1)) MB" ok
+    Write-WMLog "Total freed: ~$([math]::Round($totalFreed/1MB,1)) MB" ok
+    Write-WMLog "Tip: for WinSxS store cleanup use Config > Fixes > 'Component Store Cleanup' (slow)."
+}
+
+# WinSxS component store cleanup - long and silent, so it lives on its own button.
+function Invoke-WMComponentCleanup {
+    Write-WMLog "COMPONENT STORE CLEANUP (DISM)" head
+    Write-WMLog "This can take several minutes with little output - please wait..." step
+    Dism.exe /Online /Cleanup-Image /StartComponentCleanup 2>&1 | ForEach-Object {
+        $l = "$_".Trim(); if ($l -and $l -notmatch '%') { Write-WMLog $l }
+    }
+    Write-WMLog "Component store cleanup complete." ok
 }
 
 # --- winget helper ------------------------------------------
@@ -1162,6 +1169,7 @@ $Config = [ordered]@{
         @{ Type = 'fn'; Category = 'Fixes'; Label = 'WinGet - Reinstall / Repair';         Action = 'Invoke-WMWingetReinstall' }
         @{ Type = 'fn'; Category = 'Fixes'; Label = 'Time Sync (NTP) - Enable';            Action = 'Invoke-WMEnableNtp' }
         @{ Type = 'fn'; Category = 'Fixes'; Label = 'Restart Explorer';                    Action = 'Invoke-WMRestartExplorer' }
+        @{ Type = 'fn'; Category = 'Fixes'; Label = 'Component Store Cleanup (slow)';      Action = 'Invoke-WMComponentCleanup' }
         # Legacy Windows Panels
         @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Control Panel';        Action = 'Invoke-WMControlPanel' }
         @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Network Connections';  Action = 'Invoke-WMNetworkPanel' }
