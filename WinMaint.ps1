@@ -1,0 +1,1008 @@
+# ============================================================
+#  CW Maintenance Utility (WinMaint) - GUI, WinUtil-style
+#  Single self-contained script. WPF dark UI (Catppuccin Mocha).
+#  Local:  powershell -NoProfile -ExecutionPolicy Bypass -File .\WinMaint.ps1
+#  Hosted: irm <WinMaintUrl> | iex
+# ============================================================
+param(
+    [switch]$SelfTest   # build the UI but do not ShowDialog (for headless verification)
+)
+
+# Raw URL where this script is published, so it can re-elevate itself when run
+# via `irm <url> | iex` (no local file path is available in that mode).
+# Replace <user>/<repo> with your GitHub once published.
+$WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
+
+# --- Admin guard / self-relaunch ----------------------------
+function Test-Admin {
+    ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+if (-not $SelfTest -and -not (Test-Admin)) {
+    if ($PSCommandPath) {
+        # Local file: relaunch this file elevated.
+        Start-Process powershell.exe -Verb RunAs -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`""
+        )
+    } elseif ($WinMaintUrl -and $WinMaintUrl -notmatch '<user>') {
+        # Hosted (irm | iex): re-elevate by re-fetching and running the script.
+        Start-Process powershell.exe -Verb RunAs -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "irm $WinMaintUrl | iex"
+        )
+    } else {
+        Write-Warning "CW Maintenance Utility requires Administrator privileges. Run PowerShell as administrator and try again."
+        return
+    }
+    exit
+}
+
+# --- Catppuccin Mocha for the PowerShell console ------------
+# Remaps the 16 console colour slots to Catppuccin Mocha RGB via
+# SetConsoleScreenBufferInfoEx, so Write-Host's named colours render in-theme.
+function Set-CatppuccinConsole {
+    try {
+        if (-not ('Win32Maint.ConsolePalette' -as [type])) {
+            Add-Type -Namespace Win32Maint -Name ConsolePalette -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct COORD { public short X; public short Y; }
+[StructLayout(LayoutKind.Sequential)] public struct SMALL_RECT { public short Left; public short Top; public short Right; public short Bottom; }
+[StructLayout(LayoutKind.Sequential)] public struct CONSOLE_SCREEN_BUFFER_INFO_EX {
+    public uint cbSize; public COORD dwSize; public COORD dwCursorPosition; public ushort wAttributes;
+    public SMALL_RECT srWindow; public COORD dwMaximumWindowSize; public ushort wPopupAttributes;
+    public bool bFullscreenSupported;
+    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)] public uint[] ColorTable;
+}
+[DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetConsoleScreenBufferInfoEx(IntPtr h, ref CONSOLE_SCREEN_BUFFER_INFO_EX i);
+[DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleScreenBufferInfoEx(IntPtr h, ref CONSOLE_SCREEN_BUFFER_INFO_EX i);
+'@
+        }
+        $h = [Win32Maint.ConsolePalette]::GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        $info = New-Object Win32Maint.ConsolePalette+CONSOLE_SCREEN_BUFFER_INFO_EX
+        $info.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($info)
+        if (-not [Win32Maint.ConsolePalette]::GetConsoleScreenBufferInfoEx($h, [ref]$info)) { return }
+        # COLORREF = 0x00BBGGRR. Catppuccin Mocha, mapped onto the 16 ConsoleColor slots.
+        $rgb = { param($hex) $r=[Convert]::ToInt32($hex.Substring(0,2),16); $g=[Convert]::ToInt32($hex.Substring(2,2),16); $b=[Convert]::ToInt32($hex.Substring(4,2),16); [uint32]($r -bor ($g -shl 8) -bor ($b -shl 16)) }
+        $info.ColorTable[0]  = & $rgb '1E1E2E'  # Black       -> Base (background)
+        $info.ColorTable[1]  = & $rgb '89B4FA'  # DarkBlue    -> Blue
+        $info.ColorTable[2]  = & $rgb 'A6E3A1'  # DarkGreen   -> Green
+        $info.ColorTable[3]  = & $rgb '94E2D5'  # DarkCyan    -> Teal
+        $info.ColorTable[4]  = & $rgb 'F38BA8'  # DarkRed     -> Red
+        $info.ColorTable[5]  = & $rgb 'CBA6F7'  # DarkMagenta -> Mauve
+        $info.ColorTable[6]  = & $rgb 'F9E2AF'  # DarkYellow  -> Yellow
+        $info.ColorTable[7]  = & $rgb 'CDD6F4'  # Gray        -> Text (foreground)
+        $info.ColorTable[8]  = & $rgb '6C7086'  # DarkGray    -> Overlay0
+        $info.ColorTable[9]  = & $rgb '89B4FA'  # Blue        -> Blue
+        $info.ColorTable[10] = & $rgb 'A6E3A1'  # Green       -> Green
+        $info.ColorTable[11] = & $rgb '89DCEB'  # Cyan        -> Sky
+        $info.ColorTable[12] = & $rgb 'F38BA8'  # Red         -> Red
+        $info.ColorTable[13] = & $rgb 'CBA6F7'  # Magenta     -> Mauve
+        $info.ColorTable[14] = & $rgb 'F9E2AF'  # Yellow      -> Yellow
+        $info.ColorTable[15] = & $rgb 'CDD6F4'  # White       -> Text
+        # Workaround for the documented off-by-one shrink on Set*Ex.
+        $info.srWindow.Right  += 1
+        $info.srWindow.Bottom += 1
+        [Win32Maint.ConsolePalette]::SetConsoleScreenBufferInfoEx($h, [ref]$info) | Out-Null
+        $Host.UI.RawUI.BackgroundColor = 'Black'   # slot 0 = Base
+        $Host.UI.RawUI.ForegroundColor = 'Gray'    # slot 7 = Text
+        Clear-Host
+    } catch {}
+}
+Set-CatppuccinConsole
+
+# Decode native command output (e.g. winget) as UTF-8 so accented text is not
+# mangled (process-wide static; also re-applied inside the worker runspace).
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+
+# Output folder (predictable; hosted mode has no script dir).
+$WMRoot = Join-Path $env:SystemDrive 'WinMaint'
+if (-not (Test-Path $WMRoot)) { New-Item -ItemType Directory -Path $WMRoot -Force | Out-Null }
+$LogFile       = Join-Path $WMRoot 'WinMaint.log'
+$InventoryFile = Join-Path $WMRoot 'Inventory.csv'
+
+# --- Shared state between UI thread and worker runspace -----
+$sync = [hashtable]::Synchronized(@{})
+$sync.Running    = $false
+$sync.LogFile    = $LogFile
+$sync.Inventory  = $InventoryFile
+
+# --- winget resolver (works in elevated session) ------------
+function Resolve-WMWinget {
+    $cmd = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source) -and ((Get-Item $cmd.Source).Length -gt 0)) {
+        return $cmd.Source
+    }
+    Get-ChildItem "$env:ProgramFiles\WindowsApps" -Filter "Microsoft.DesktopAppInstaller_*_x64__*" -Directory -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        ForEach-Object { Join-Path $_.FullName "winget.exe" } |
+        Where-Object { Test-Path $_ } |
+        Select-Object -First 1
+}
+$Winget = Resolve-WMWinget
+
+# ============================================================
+#  ENGINE FUNCTIONS  (run inside the worker runspace)
+#  All write progress through Write-WMLog -> $sync.LogQueue.
+# ============================================================
+function Write-WMLog {
+    param([string]$Text, [ValidateSet('plain','head','step','ok','warn','err')][string]$Level = 'plain')
+    $prefix = switch ($Level) {
+        'head' { "`r`n==== " }
+        'step' { "  >> " }
+        'ok'   { "  OK " }
+        'warn' { "  !! " }
+        'err'  { "  XX " }
+        default { "     " }
+    }
+    $line = "$prefix$Text"
+    $color = switch ($Level) { 'head' { 'Cyan' } 'step' { 'Yellow' } 'ok' { 'Green' } 'warn' { 'Magenta' } 'err' { 'Red' } default { 'Gray' } }
+    Write-Host $line -ForegroundColor $color
+    try { Add-Content -Path $sync.LogFile -Value $line -ErrorAction SilentlyContinue } catch {}
+}
+
+function Invoke-WMSystemSummary {
+    Write-WMLog "SYSTEM SUMMARY" head
+    try {
+        $cs      = Get-WmiObject Win32_ComputerSystem
+        $os      = Get-WmiObject Win32_OperatingSystem
+        $bios    = Get-WmiObject Win32_BIOS
+        $cpu     = Get-WmiObject Win32_Processor | Select-Object -First 1
+        $disks   = Get-WmiObject Win32_DiskDrive
+        $ram     = Get-WmiObject Win32_PhysicalMemory
+        $volumes = Get-WmiObject Win32_LogicalDisk | Where-Object { $_.DriveType -eq 3 }
+
+        $totalRAM   = [math]::Round(($cs.TotalPhysicalMemory / 1GB), 1)
+        $winVersion = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction SilentlyContinue).DisplayVersion
+
+        Write-WMLog "Hostname      : $($cs.Name)"
+        Write-WMLog "Manufacturer  : $($cs.Manufacturer)"
+        Write-WMLog "Model         : $($cs.Model)"
+        Write-WMLog "Serial Number : $($bios.SerialNumber)"
+        Write-WMLog "Windows       : $($os.Caption) (Version $winVersion, Build $($os.BuildNumber))"
+        Write-WMLog "CPU           : $($cpu.Name.Trim())"
+        Write-WMLog "Cores/Threads : $($cpu.NumberOfCores) cores / $($cpu.NumberOfLogicalProcessors) threads"
+        Write-WMLog "RAM           : $totalRAM GB ($($ram.Count) stick(s))"
+
+        Write-WMLog "Disk Drives:"
+        foreach ($disk in $disks) {
+            $sizeGB = [math]::Round($disk.Size / 1GB, 1)
+            $media  = if ($disk.MediaType) { $disk.MediaType } else { "Unknown" }
+            Write-WMLog "  - $($disk.Model.Trim())  |  $sizeGB GB  |  $media  |  SMART: $($disk.Status)"
+        }
+        Write-WMLog "Disk Usage:"
+        foreach ($vol in $volumes) {
+            $totalGB = [math]::Round($vol.Size / 1GB, 1)
+            $freeGB  = [math]::Round($vol.FreeSpace / 1GB, 1)
+            $usedGB  = [math]::Round(($vol.Size - $vol.FreeSpace) / 1GB, 1)
+            $pctFree = if ($vol.Size -gt 0) { [math]::Round(($vol.FreeSpace / $vol.Size) * 100, 0) } else { 0 }
+            Write-WMLog "  $($vol.DeviceID)  $usedGB / $totalGB GB used  ($freeGB GB free, $pctFree% free)"
+        }
+        $nics = Get-WmiObject Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true }
+        Write-WMLog "Network (active):"
+        foreach ($nic in $nics) {
+            $ip  = ($nic.IPAddress | Where-Object { $_ -match "\." } | Select-Object -First 1)
+            if (-not $ip) { $ip = "N/A" }
+            $mac = if ($nic.MACAddress) { $nic.MACAddress } else { "N/A" }
+            Write-WMLog "  - $($nic.Description)  [IP: $ip, MAC: $mac]"
+        }
+
+        # Inventory CSV (overwrite each run)
+        try {
+            $diskInfo = ($disks | ForEach-Object {
+                $m = if ($_.MediaType) { $_.MediaType } else { "Unknown" }
+                "$($_.Model.Trim()) ($([math]::Round($_.Size/1GB,1)) GB, $m, SMART: $($_.Status))"
+            }) -join "; "
+            $volInfo = ($volumes | ForEach-Object {
+                "$($_.DeviceID) $([math]::Round(($_.Size-$_.FreeSpace)/1GB,1))/$([math]::Round($_.Size/1GB,1)) GB ($([math]::Round($_.FreeSpace/1GB,1)) GB livres)"
+            }) -join "; "
+            $netInfo = ($nics | ForEach-Object {
+                $i = ($_.IPAddress | Where-Object { $_ -match "\." } | Select-Object -First 1); if (-not $i) { $i = "N/A" }
+                $mc = if ($_.MACAddress) { $_.MACAddress } else { "N/A" }
+                "$($_.Description) [IP: $i, MAC: $mc]"
+            }) -join "; "
+            [PSCustomObject]@{
+                Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+                Hostname = $cs.Name; Manufacturer = $cs.Manufacturer; Model = $cs.Model
+                SerialNumber = $bios.SerialNumber
+                Windows = "$($os.Caption) (Version $winVersion, Build $($os.BuildNumber))"
+                CPU = $cpu.Name.Trim(); Cores = $cpu.NumberOfCores; Threads = $cpu.NumberOfLogicalProcessors
+                RAM_GB = $totalRAM; RAM_Sticks = $ram.Count
+                Disks = $diskInfo; Volumes = $volInfo; Network = $netInfo
+            } | Export-Csv -Path $sync.Inventory -NoTypeInformation -Encoding UTF8
+            Write-WMLog "Inventory written to $($sync.Inventory)" ok
+        } catch { Write-WMLog "Could not write inventory: $_" warn }
+    } catch { Write-WMLog "Could not retrieve system info: $_" warn }
+}
+
+function Invoke-WMRebootCheck {
+    Write-WMLog "PENDING REBOOT CHECK" head
+    $reasons = @()
+    $cbsKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending"
+    $wuKey  = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"
+    if (Test-Path $cbsKey) { $reasons += "Windows Component Servicing" }
+    if (Test-Path $wuKey)  { $reasons += "Windows Update" }
+    try {
+        $pv = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -Name "PendingFileRenameOperations" -ErrorAction Stop
+        if ($pv.PendingFileRenameOperations) { $reasons += "Pending File Rename Operations" }
+    } catch {}
+    if ($reasons.Count) {
+        Write-WMLog "REBOOT PENDING for:" warn
+        $reasons | ForEach-Object { Write-WMLog "  - $_" warn }
+    } else { Write-WMLog "No pending reboot. Safe to proceed." ok }
+}
+
+function Invoke-WMStartupItems {
+    Write-WMLog "STARTUP ITEMS" head
+    $items = @()
+    $regPaths = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"
+    )
+    foreach ($path in $regPaths) {
+        if (Test-Path $path) {
+            $e = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+            if ($e) {
+                $e.PSObject.Properties | Where-Object { $_.Name -notmatch "^PS" } | ForEach-Object {
+                    $items += [PSCustomObject]@{ Source = $path.Split("\")[-1]; Name = $_.Name; Command = $_.Value }
+                }
+            }
+        }
+    }
+    foreach ($folder in @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup",
+                          "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup")) {
+        if (Test-Path $folder) {
+            Get-ChildItem $folder -ErrorAction SilentlyContinue | ForEach-Object {
+                $items += [PSCustomObject]@{ Source = "Startup Folder"; Name = $_.Name; Command = $_.FullName }
+            }
+        }
+    }
+    if (-not $items.Count) { Write-WMLog "No startup items." ok }
+    else {
+        Write-WMLog "$($items.Count) startup item(s):"
+        foreach ($i in $items) { Write-WMLog "  [$($i.Source)] $($i.Name) -> $($i.Command)" }
+    }
+}
+
+function Invoke-WMEventLog {
+    Write-WMLog "EVENT LOG CHECK (ultimos 7 dias)" head
+    $since = (Get-Date).AddDays(-7)
+    foreach ($log in @("System", "Application")) {
+        try {
+            $crit = Get-WinEvent -FilterHashtable @{ LogName = $log; Level = 1; StartTime = $since } -ErrorAction SilentlyContinue
+            $errs = Get-WinEvent -FilterHashtable @{ LogName = $log; Level = 2; StartTime = $since } -ErrorAction SilentlyContinue
+            $cC = ($crit | Measure-Object).Count
+            $eC = ($errs | Measure-Object).Count
+            Write-WMLog "$log Log  |  Critical: $cC  |  Errors: $eC"
+            $top = if ($cC) { $crit | Sort-Object TimeCreated -Descending | Select-Object -First 5 }
+                   elseif ($eC) { $errs | Sort-Object TimeCreated -Descending | Select-Object -First 5 }
+            foreach ($ev in $top) {
+                $lvl = if ($ev.Level -eq 1) { "CRITICAL" } else { "ERROR" }
+                $msg = ($ev.Message -split "`n")[0].Trim()
+                if ($msg.Length -gt 110) { $msg = $msg.Substring(0, 110) + "..." }
+                Write-WMLog "  [$lvl $($ev.TimeCreated.ToString('yyyy-MM-dd HH:mm'))] $($ev.ProviderName) - $msg"
+            }
+        } catch { Write-WMLog "Could not read $log log: $_" warn }
+    }
+}
+
+function Invoke-WMCleanup {
+    Write-WMLog "CLEAN TEMPORARY FILES" head
+    $tempPaths = @($env:TEMP, $env:TMP, "$env:SystemRoot\Temp", "$env:LOCALAPPDATA\Temp")
+    [long]$totalFreed = 0
+    foreach ($path in ($tempPaths | Sort-Object -Unique)) {
+        if (-not (Test-Path $path)) { continue }
+        Write-WMLog "Cleaning: $path" step
+        try {
+            $size = (Get-ChildItem $path -Recurse -Force -ErrorAction SilentlyContinue |
+                     Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
+            Remove-Item "$path\*" -Recurse -Force -ErrorAction SilentlyContinue
+            $totalFreed += $size
+            Write-WMLog "Cleaned (~$([math]::Round($size/1MB,1)) MB)" ok
+        } catch { Write-WMLog "Partial clean on ${path}: $_" warn }
+    }
+    Write-WMLog "Running silent Disk Cleanup..." step
+    $regPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches"
+    Get-ChildItem $regPath -ErrorAction SilentlyContinue | ForEach-Object {
+        Set-ItemProperty -Path $_.PSPath -Name "StateFlags0099" -Value 2 -ErrorAction SilentlyContinue
+    }
+    Start-Process "cleanmgr.exe" -ArgumentList "/sagerun:99" -Wait -ErrorAction SilentlyContinue
+    Write-WMLog "Disk Cleanup complete." ok
+    $prefetch = "$env:SystemRoot\Prefetch"
+    if (Test-Path $prefetch) {
+        try { Remove-Item "$prefetch\*" -Force -ErrorAction SilentlyContinue; Write-WMLog "Prefetch cleaned." ok }
+        catch { Write-WMLog "Could not clean Prefetch." warn }
+    }
+    Write-WMLog "Total temp freed: ~$([math]::Round($totalFreed/1MB,1)) MB" ok
+}
+
+# --- winget helper ------------------------------------------
+# Inside the worker runspace, winget's native stdout is swallowed by the
+# PowerShell instance's pipeline, so we capture it and re-emit through Write-WMLog
+# (console + file). We drop the block-character progress bars and spinner frames
+# so we keep useful status (Downloading / Successfully installed) without "walls".
+function Invoke-WMWinget {
+    param([string[]]$A)
+    $blockRe = '[' + [char]0x2580 + '-' + [char]0x259F + ']'
+    & $Winget @A 2>&1 | ForEach-Object {
+        $l = ("$_").Trim()
+        if (-not $l) { return }
+        if ($l -match $blockRe)     { return }   # progress bar frames
+        if ($l -match '^[-\\|/]+$') { return }   # spinner frames
+        Write-WMLog $l
+    }
+}
+
+# True if a winget package id is already installed on the machine.
+function Test-WMInstalled {
+    param([string]$Id)
+    if (-not $Winget) { return $false }
+    $listed = & $Winget list --id $Id --accept-source-agreements 2>&1 | Out-String
+    return ($listed -match [regex]::Escape($Id))
+}
+
+# True if a program with a matching display name is installed (ARP registry or Appx).
+# More reliable than a winget id when the installed package id differs.
+function Test-WMInstalledName {
+    param([string]$NamePattern)
+    $keys = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    foreach ($k in $keys) {
+        if (Get-ItemProperty $k -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like $NamePattern }) { return $true }
+    }
+    if (Get-AppxPackage -Name $NamePattern -ErrorAction SilentlyContinue) { return $true }
+    return $false
+}
+
+# Launch a program in the logged-in user's (non-elevated) session via a one-shot
+# scheduled task. Needed because this script runs elevated, and some apps (e.g.
+# HP Support Assistant) won't show their window when started from an admin process.
+function Start-WMAsUser {
+    param([string]$Path, [string]$Arguments = "")
+    $user = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
+    if (-not $user) { return $false }
+    $taskName = "WMLaunch_" + [guid]::NewGuid().ToString("N").Substring(0, 8)
+    try {
+        $action = if ($Arguments) {
+            New-ScheduledTaskAction -Execute $Path -Argument $Arguments -WorkingDirectory (Split-Path $Path)
+        } else {
+            New-ScheduledTaskAction -Execute $Path -WorkingDirectory (Split-Path $Path)
+        }
+        $principal = New-ScheduledTaskPrincipal -UserId $user -RunLevel Limited
+        $task = New-ScheduledTask -Action $action -Principal $principal
+        Register-ScheduledTask -TaskName $taskName -InputObject $task -Force -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+        Start-Sleep -Seconds 3
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        return $true
+    } catch {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        return $false
+    }
+}
+
+# Launch an installed desktop app via its Start Menu shortcut (by name pattern).
+function Start-WMShortcut {
+    param([string]$NamePattern)
+    $dirs = @(
+        "$env:ProgramData\Microsoft\Windows\Start Menu\Programs",
+        "$env:APPDATA\Microsoft\Windows\Start Menu\Programs"
+    )
+    $lnk = $dirs |
+        ForEach-Object { Get-ChildItem $_ -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue } |
+        Where-Object { $_.BaseName -like $NamePattern } |
+        Select-Object -First 1
+    if ($lnk) { Start-Process $lnk.FullName; return $true }
+    return $false
+}
+
+# --- Install (winget) ---------------------------------------
+function Install-WMApp {
+    param($App)
+    $Id = $App.WingetId; $Name = $App.Label
+    if (-not $Winget) { Write-WMLog "winget unavailable; cannot install $Name." warn; return }
+    Write-WMLog "Checking/installing: $Name ($Id)" step
+    $listArgs = @('list', '--id', $Id, '--accept-source-agreements')
+    if ($App.Source) { $listArgs += @('--source', $App.Source) }
+    $listed = & $Winget @listArgs 2>&1 | Out-String
+    if ($listed -match [regex]::Escape($Id)) { Write-WMLog "$Name is already installed." ok; return }
+    $instArgs = @('install', '--id', $Id, '--accept-package-agreements', '--accept-source-agreements', '--silent')
+    if ($App.Source) { $instArgs += @('--source', $App.Source) }
+    Invoke-WMWinget $instArgs
+    Write-WMLog "${Name}: installation complete." ok
+}
+
+# --- Updates -------------------------------------------------
+function Invoke-WMWindowsUpdate {
+    Write-WMLog "WINDOWS UPDATE" head
+    if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
+        Write-WMLog "Installing PSWindowsUpdate module..." step
+        try { Install-Module PSWindowsUpdate -Force -Scope AllUsers -ErrorAction Stop; Write-WMLog "PSWindowsUpdate installed." ok }
+        catch { Write-WMLog "Could not install PSWindowsUpdate: $_" warn }
+    }
+    try {
+        Import-Module PSWindowsUpdate -ErrorAction Stop
+        $updates = Get-WindowsUpdate -AcceptAll -IgnoreReboot -ErrorAction Stop
+        if ($updates) {
+            Write-WMLog "$($updates.Count) update(s) found. Installing..." step
+            Install-WindowsUpdate -AcceptAll -IgnoreReboot -AutoReboot:$false | Out-Null
+            Write-WMLog "Updates installed. A reboot may be required." ok
+        } else { Write-WMLog "Windows is up to date." ok }
+    } catch {
+        Write-WMLog "PSWindowsUpdate failed, trying COM... ($_)" warn
+        try {
+            $wu = New-Object -ComObject Microsoft.Update.Session
+            $res = $wu.CreateUpdateSearcher().Search("IsInstalled=0 and Type='Software'")
+            if ($res.Updates.Count -eq 0) { Write-WMLog "No pending updates." ok }
+            else {
+                $dl = $wu.CreateUpdateDownloader(); $dl.Updates = $res.Updates; $dl.Download() | Out-Null
+                $ins = $wu.CreateUpdateInstaller(); $ins.Updates = $res.Updates; $ins.Install() | Out-Null
+                Write-WMLog "Installed $($res.Updates.Count) update(s) via COM." ok
+            }
+        } catch { Write-WMLog "Windows Update failed: $_" err }
+    }
+}
+
+function Invoke-WMStoreUpdate {
+    Write-WMLog "MICROSOFT STORE UPDATES" head
+    try {
+        $obj = Get-CimInstance -Namespace "root\cimv2\mdm\dmmap" -ClassName "MDM_EnterpriseModernAppManagement_AppManagement01" -ErrorAction Stop
+        Invoke-CimMethod -InputObject $obj -MethodName UpdateScanMethod | Out-Null
+        Write-WMLog "Store update scan triggered." ok
+    } catch {
+        Write-WMLog "MDM bridge unavailable; trying winget..." warn
+        if ($Winget) {
+            Invoke-WMWinget @('upgrade', '--source', 'msstore', '--all', '--accept-package-agreements', '--accept-source-agreements', '--silent')
+            Write-WMLog "Store apps updated via winget." ok
+        } else { Write-WMLog "winget unavailable." err }
+    }
+}
+
+function Invoke-WMOfficeUpdate {
+    Write-WMLog "MICROSOFT OFFICE UPDATES" head
+    $c2r = @(
+        "${env:ProgramFiles}\Common Files\microsoft shared\ClickToRun\OfficeC2RClient.exe",
+        "${env:ProgramFiles(x86)}\Common Files\microsoft shared\ClickToRun\OfficeC2RClient.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($c2r) {
+        Write-WMLog "Running Click-to-Run updater..." step
+        Start-Process -FilePath $c2r -ArgumentList "/update user displaylevel=false forceappshutdown=false" -Wait
+        Write-WMLog "Office update check complete." ok
+    } else {
+        Write-WMLog "Office C2R not found; trying winget..." warn
+        if ($Winget) {
+            Invoke-WMWinget @('upgrade', '--id', 'Microsoft.Office', '--accept-package-agreements', '--accept-source-agreements', '--silent')
+            Write-WMLog "Office updated via winget." ok
+        }
+    }
+}
+
+function Invoke-WMWingetUpgradeAll {
+    Write-WMLog "WINGET - UPGRADE ALL" head
+    if (-not $Winget) { Write-WMLog "winget unavailable." err; return }
+    Invoke-WMWinget @('upgrade', '--all', '--accept-package-agreements', '--accept-source-agreements', '--include-unknown')
+    Write-WMLog "winget upgrade complete." ok
+}
+
+function Invoke-WMLenovoVantage {
+    Write-WMLog "LENOVO VANTAGE" head
+    $mfr = (Get-WmiObject Win32_ComputerSystem).Manufacturer
+    if ($mfr -notmatch "Lenovo") { Write-WMLog "Manufacturer '$mfr' - skipped (Lenovo only)." warn; return }
+    if (-not $Winget) { Write-WMLog "winget unavailable." warn; return }
+    # Lenovo Vantage is a UWP app; detect via Appx package.
+    $pkg = Get-AppxPackage -Name "*LenovoCompanion*" -ErrorAction SilentlyContinue
+    if (-not $pkg) { $pkg = Get-AppxPackage -Name "*LenovoVantage*" -ErrorAction SilentlyContinue }
+    if ($pkg) {
+        Write-WMLog "Lenovo Vantage is already installed." ok
+    } else {
+        Invoke-WMWinget @('install', '--id', '9WZDNCRFJ4MV', '--source', 'msstore', '--accept-package-agreements', '--accept-source-agreements')
+        Start-Sleep -Seconds 8
+        $pkg = Get-AppxPackage -Name "*LenovoCompanion*" -ErrorAction SilentlyContinue
+        if (-not $pkg) { $pkg = Get-AppxPackage -Name "*LenovoVantage*" -ErrorAction SilentlyContinue }
+        Write-WMLog "Lenovo Vantage installed." ok
+    }
+    if ($pkg) {
+        Start-Process "explorer.exe" -ArgumentList "shell:AppsFolder\$($pkg.PackageFamilyName)!App"
+        Write-WMLog "Lenovo Vantage launched." ok
+    } else { Write-WMLog "Installed, but could not launch automatically; open it from the Start Menu." warn }
+}
+
+function Invoke-WMHPSupport {
+    Write-WMLog "HP SUPPORT ASSISTANT" head
+    $mfr = (Get-WmiObject Win32_ComputerSystem).Manufacturer
+    if ($mfr -notmatch "HP|Hewlett") { Write-WMLog "Manufacturer '$mfr' - skipped (HP only)." warn; return }
+    if (-not $Winget) { Write-WMLog "winget unavailable." warn; return }
+    # The HP Support Assistant UI is opened by HPSALauncher.exe (under
+    # ...\HP Support Framework\Resources\); prefer it over HPSAAppLauncher.exe.
+    $findHpExe = {
+        Get-ChildItem -Path "$env:ProgramFiles\HP", "${env:ProgramFiles(x86)}\HP",
+                            "$env:ProgramFiles\Hewlett-Packard", "${env:ProgramFiles(x86)}\Hewlett-Packard" `
+                       -Recurse -Filter '*.exe' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^(HPSALauncher|HPSAAppLauncher)\.exe$' } |
+            Sort-Object { $_.Name -ne 'HPSALauncher.exe' } |
+            Select-Object -First 1
+    }
+    # Presence of the launcher exe is the most reliable "installed" signal here:
+    # under an elevated session the per-user registry/Appx checks can miss it.
+    $hpExe = & $findHpExe
+    if ($hpExe -or (Test-WMInstalledName "*HP Support Assistant*")) {
+        Write-WMLog "HP Support Assistant is already installed." ok
+    } else {
+        Invoke-WMWinget @('install', '--id', 'HPInc.HPSupportAssistant', '--accept-package-agreements', '--accept-source-agreements', '--silent')
+        Start-Sleep -Seconds 5
+        $hpExe = & $findHpExe
+        Write-WMLog "HP Support Assistant installed." ok
+    }
+    # HP Support Assistant is the UWP app; launch it by its real AUMID from
+    # Get-StartApps (the app id is NOT "App"), via explorer so it opens in the
+    # user session. The desktop HPSALauncher.exe belongs to the old framework and
+    # does not show the window, so it is only a fallback.
+    $aumid = (Get-StartApps -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*HP Support Assistant*" } | Select-Object -First 1).AppID
+    if ($aumid) { Start-Process "explorer.exe" -ArgumentList "shell:AppsFolder\$aumid"; Write-WMLog "HP Support Assistant launched." ok }
+    elseif ($hpExe -and (Start-WMAsUser $hpExe.FullName)) { Write-WMLog "HP Support Assistant launched ($($hpExe.Name))." ok }
+    elseif (Start-WMShortcut "*HP Support Assistant*") { Write-WMLog "HP Support Assistant launched." ok }
+    else { Write-WMLog "Installed, but could not locate the launcher; open it from the Start Menu." warn }
+}
+
+function Invoke-WMDellCommandUpdate {
+    Write-WMLog "DELL COMMAND | UPDATE" head
+    $mfr = (Get-WmiObject Win32_ComputerSystem).Manufacturer
+    if ($mfr -notmatch "Dell") { Write-WMLog "Manufacturer '$mfr' - skipped (Dell only)." warn; return }
+    if (-not $Winget) { Write-WMLog "winget unavailable." warn; return }
+    if (Test-WMInstalledName "*Dell Command*Update*") {
+        Write-WMLog "Dell Command | Update is already installed." ok
+    } else {
+        Invoke-WMWinget @('install', '--id', 'Dell.CommandUpdate', '--accept-package-agreements', '--accept-source-agreements', '--silent')
+        Start-Sleep -Seconds 5
+        Write-WMLog "Dell Command | Update installed." ok
+    }
+    $dcuExe = @(
+        "${env:ProgramFiles}\Dell\CommandUpdate\DellCommandUpdate.exe",
+        "${env:ProgramFiles(x86)}\Dell\CommandUpdate\DellCommandUpdate.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($dcuExe) { Start-Process $dcuExe; Write-WMLog "Dell Command | Update launched." ok }
+    elseif (Start-WMShortcut "*Dell Command*Update*") { Write-WMLog "Dell Command | Update launched." ok }
+    else { Write-WMLog "Installed, but could not launch automatically; open it from the Start Menu." warn }
+}
+
+function Invoke-WMIntelDSA {
+    Write-WMLog "INTEL DRIVER & SUPPORT ASSISTANT" head
+    if (-not $Winget) { Write-WMLog "winget unavailable." warn; return }
+    if (Test-WMInstalled 'Intel.IntelDriverAndSupportAssistant') {
+        Write-WMLog "Intel DSA is already installed." ok
+    } else {
+        Invoke-WMWinget @('install', '--id', 'Intel.IntelDriverAndSupportAssistant', '--accept-package-agreements', '--accept-source-agreements', '--silent')
+        Write-WMLog "Intel DSA installed." ok
+    }
+    $iExe = @(
+        "${env:ProgramFiles}\Intel\Driver and Support Assistant\DSAExt.exe",
+        "${env:ProgramFiles(x86)}\Intel\Driver and Support Assistant\DSAExt.exe",
+        "${env:ProgramFiles}\Intel\SUR\QUEENCREEK\x64\Esrv.exe",
+        "${env:ProgramFiles(x86)}\Intel\SUR\QUEENCREEK\x64\Esrv.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($iExe) { Start-Process $iExe; Write-WMLog "Intel DSA launched." ok }
+    elseif (Start-WMShortcut "*Intel*Driver*Support Assistant*") { Write-WMLog "Intel DSA launched." ok }
+    else { Start-Process "https://www.intel.com/content/www/us/en/support/detect.html"; Write-WMLog "Opened Intel DSA scan page in the browser." ok }
+}
+
+function Invoke-WMPatchMyPC {
+    Write-WMLog "PATCH MY PC HOME UPDATER" head
+    $dest = Join-Path $env:TEMP 'PatchMyPC.exe'
+    try {
+        Invoke-WebRequest -Uri "https://patchmypc.com/freeupdater/PatchMyPC.exe" -OutFile $dest -UseBasicParsing -ErrorAction Stop
+        Write-WMLog "Downloaded. Launching (separate window)..." step
+        Start-Process -FilePath $dest
+        Write-WMLog "Patch My PC launched." ok
+    } catch { Write-WMLog "Patch My PC failed: $_" err }
+}
+
+# --- Tweaks (data-driven, reversible) -----------------------
+# Each tweak item carries the registry values for its on/off state and an
+# optional list of services to disable. Apply sets the "on" state; undo sets
+# the "off" (Windows default) state.
+function Invoke-WMTweak {
+    param($T, [string]$Mode)
+    $apply = ($Mode -ne 'undo')
+    Write-WMLog "$($T.Label) [$Mode]" step
+    foreach ($r in $T.Reg) {
+        $val = if ($apply) { $r.On } else { $r.Off }
+        try {
+            if (-not (Test-Path $r.Path)) { New-Item -Path $r.Path -Force | Out-Null }
+            Set-ItemProperty -Path $r.Path -Name $r.Name -Value $val -Type $r.Kind -Force -ErrorAction Stop
+        } catch { Write-WMLog "  reg $($r.Path)\$($r.Name): $_" warn }
+    }
+    foreach ($svc in $T.SvcOff) {
+        try {
+            if ($apply) { Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue; Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue }
+            else        { Set-Service -Name $svc -StartupType Automatic -ErrorAction SilentlyContinue; Start-Service -Name $svc -ErrorAction SilentlyContinue }
+        } catch { Write-WMLog "  service ${svc}: $_" warn }
+    }
+    Write-WMLog "$($T.Label): $(if ($apply) {'applied'} else {'reverted'})." ok
+}
+
+# ============================================================
+#  CONFIG  -  drives the checkboxes per tab.
+#  Key = unique id, Label = UI text, Action = engine function,
+#  Default = checked by default. (Phase 1: Diagnostics + Cleanup.)
+# ============================================================
+$Config = [ordered]@{
+    Diagnostics = @(
+        @{ Key = 'sys';   Label = 'System Summary + Inventario CSV'; Action = 'Invoke-WMSystemSummary'; Default = $false }
+        @{ Key = 'boot';  Label = 'Pending Reboot Check';            Action = 'Invoke-WMRebootCheck';   Default = $false }
+        @{ Key = 'start'; Label = 'Startup Items';                   Action = 'Invoke-WMStartupItems';  Default = $false }
+        @{ Key = 'evt';   Label = 'Event Log (7 dias)';              Action = 'Invoke-WMEventLog';      Default = $false }
+    )
+    Install = @(
+        # Browsers
+        @{ Type = 'app'; Category = 'Browsers'; Label = 'Brave';              WingetId = 'Brave.Brave' }
+        @{ Type = 'app'; Category = 'Browsers'; Label = 'Google Chrome';      WingetId = 'Google.Chrome' }
+        @{ Type = 'app'; Category = 'Browsers'; Label = 'Microsoft Edge';     WingetId = 'Microsoft.Edge' }
+        @{ Type = 'app'; Category = 'Browsers'; Label = 'Mozilla Firefox';    WingetId = 'Mozilla.Firefox' }
+        # Communications
+        @{ Type = 'app'; Category = 'Communications'; Label = 'Microsoft Teams'; WingetId = 'Microsoft.Teams' }
+        @{ Type = 'app'; Category = 'Communications'; Label = 'WhatsApp';         WingetId = '9NKSQGP7F2NH'; Source = 'msstore' }
+        @{ Type = 'app'; Category = 'Communications'; Label = 'Telegram';         WingetId = 'Telegram.TelegramDesktop' }
+        # Development
+        @{ Type = 'app'; Category = 'Development'; Label = 'VS Code';              WingetId = 'Microsoft.VisualStudioCode' }
+        @{ Type = 'app'; Category = 'Development'; Label = 'Visual Studio 2026';   WingetId = 'Microsoft.VisualStudio.Community' }
+        @{ Type = 'app'; Category = 'Development'; Label = 'Python 3';             WingetId = 'Python.Python.3.13' }
+        @{ Type = 'app'; Category = 'Development'; Label = 'Node.js (LTS)';        WingetId = 'OpenJS.NodeJS.LTS' }
+        # Microsoft Tools
+        @{ Type = 'app'; Category = 'Microsoft Tools'; Label = 'OneDrive';                 WingetId = 'Microsoft.OneDrive' }
+        @{ Type = 'app'; Category = 'Microsoft Tools'; Label = 'DISMTools';                WingetId = 'CodingWondersSoftware.DISMTools.Stable' }
+        @{ Type = 'app'; Category = 'Microsoft Tools'; Label = '.NET Desktop Runtime 8';   WingetId = 'Microsoft.DotNet.DesktopRuntime.8' }
+        @{ Type = 'app'; Category = 'Microsoft Tools'; Label = '.NET Desktop Runtime 9';   WingetId = 'Microsoft.DotNet.DesktopRuntime.9' }
+        @{ Type = 'app'; Category = 'Microsoft Tools'; Label = 'PowerToys';                WingetId = 'Microsoft.PowerToys' }
+        @{ Type = 'app'; Category = 'Microsoft Tools'; Label = 'Visual C++ 2015-2022 x86'; WingetId = 'Microsoft.VCRedist.2015+.x86' }
+        @{ Type = 'app'; Category = 'Microsoft Tools'; Label = 'Visual C++ 2015-2022 x64'; WingetId = 'Microsoft.VCRedist.2015+.x64' }
+        # Documents & Office
+        @{ Type = 'app'; Category = 'Documents & Office'; Label = 'Adobe Acrobat Reader'; WingetId = 'Adobe.Acrobat.Reader.64-bit' }
+        @{ Type = 'app'; Category = 'Documents & Office'; Label = 'Foxit PDF Reader';     WingetId = 'Foxit.FoxitReader' }
+        @{ Type = 'app'; Category = 'Documents & Office'; Label = 'PDF24 Creator';        WingetId = 'geeksoftware.PDF24Creator' }
+        @{ Type = 'app'; Category = 'Documents & Office'; Label = 'LibreOffice';          WingetId = 'TheDocumentFoundation.LibreOffice' }
+        @{ Type = 'app'; Category = 'Documents & Office'; Label = 'ONLYOFFICE';           WingetId = 'ONLYOFFICE.DesktopEditors' }
+        # Multimedia
+        @{ Type = 'app'; Category = 'Multimedia'; Label = 'OBS Studio';        WingetId = 'OBSProject.OBSStudio' }
+        @{ Type = 'app'; Category = 'Multimedia'; Label = 'VLC Media Player';   WingetId = 'VideoLAN.VLC' }
+        # Diagnostics & Pro Tools
+        @{ Type = 'app'; Category = 'Diagnostics & Pro Tools'; Label = 'Angry IP Scanner';           WingetId = 'angryziber.AngryIPScanner' }
+        @{ Type = 'app'; Category = 'Diagnostics & Pro Tools'; Label = 'Nmap';                       WingetId = 'Insecure.Nmap' }
+        @{ Type = 'app'; Category = 'Diagnostics & Pro Tools'; Label = 'GPU-Z';                      WingetId = 'TechPowerUp.GPU-Z' }
+        @{ Type = 'app'; Category = 'Diagnostics & Pro Tools'; Label = 'CPU-Z';                      WingetId = 'CPUID.CPU-Z' }
+        @{ Type = 'app'; Category = 'Diagnostics & Pro Tools'; Label = 'Display Driver Uninstaller'; WingetId = 'Wagnardsoft.DisplayDriverUninstaller' }
+        @{ Type = 'app'; Category = 'Diagnostics & Pro Tools'; Label = 'PuTTY';                      WingetId = 'PuTTY.PuTTY' }
+        @{ Type = 'app'; Category = 'Diagnostics & Pro Tools'; Label = 'Wireshark';                  WingetId = 'WiresharkFoundation.Wireshark' }
+        @{ Type = 'app'; Category = 'Diagnostics & Pro Tools'; Label = 'HWiNFO64';                   WingetId = 'REALiX.HWiNFO' }
+        @{ Type = 'app'; Category = 'Diagnostics & Pro Tools'; Label = 'CrystalDiskInfo';            WingetId = 'CrystalDewWorld.CrystalDiskInfo' }
+        # Utilities
+        @{ Type = 'app'; Category = 'Utilities'; Label = '7-Zip';            WingetId = '7zip.7zip' }
+        @{ Type = 'app'; Category = 'Utilities'; Label = 'Notepad++';        WingetId = 'Notepad++.Notepad++' }
+        @{ Type = 'app'; Category = 'Utilities'; Label = 'Ventoy';           WingetId = 'Ventoy.Ventoy' }
+        @{ Type = 'app'; Category = 'Utilities'; Label = 'LocalSend';        WingetId = 'LocalSend.LocalSend' }
+        @{ Type = 'app'; Category = 'Utilities'; Label = 'AnyDesk';          WingetId = 'AnyDesk.AnyDesk' }
+        @{ Type = 'app'; Category = 'Utilities'; Label = 'Google Drive';     WingetId = 'Google.GoogleDrive' }
+        @{ Type = 'app'; Category = 'Utilities'; Label = 'KeePassXC';        WingetId = 'KeePassXCTeam.KeePassXC' }
+        @{ Type = 'app'; Category = 'Utilities'; Label = 'MSI Afterburner';  WingetId = 'Guru3D.Afterburner' }
+        @{ Type = 'app'; Category = 'Utilities'; Label = 'qBittorrent';      WingetId = 'qBittorrent.qBittorrent' }
+        @{ Type = 'app'; Category = 'Utilities'; Label = 'Revo Uninstaller'; WingetId = 'RevoUninstaller.RevoUninstaller' }
+        @{ Type = 'app'; Category = 'Utilities'; Label = 'WizTree';          WingetId = 'AntibodySoftware.WizTree' }
+    )
+    Tweaks  = @(
+        # --- Essential Tweaks (privacy / debloat / performance) ---
+        @{ Type = 'tweak'; Category = 'Essential Tweaks'; Label = 'Disable Activity History';
+           Reg = @(
+               @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'; Name = 'EnableActivityFeed';     On = 0; Off = 1; Kind = 'DWord' }
+               @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'; Name = 'PublishUserActivities';  On = 0; Off = 1; Kind = 'DWord' }
+               @{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'; Name = 'UploadUserActivities';   On = 0; Off = 1; Kind = 'DWord' }
+           ) }
+        @{ Type = 'tweak'; Category = 'Essential Tweaks'; Label = 'Disable telemetry';
+           Reg = @(
+               @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection'; Name = 'AllowTelemetry'; On = 0; Off = 1; Kind = 'DWord' }
+               @{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo'; Name = 'Enabled'; On = 0; Off = 1; Kind = 'DWord' }
+               @{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'Start_TrackProgs'; On = 0; Off = 1; Kind = 'DWord' }
+           );
+           SvcOff = @('DiagTrack', 'dmwappushservice') }
+        @{ Type = 'tweak'; Category = 'Essential Tweaks'; Label = 'Disable consumer features (suggested apps)';
+           Reg = @(@{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent'; Name = 'DisableWindowsConsumerFeatures'; On = 1; Off = 0; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Essential Tweaks'; Label = 'Disable GameDVR';
+           Reg = @(
+               @{ Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR'; Name = 'AppCaptureEnabled'; On = 0; Off = 1; Kind = 'DWord' }
+               @{ Path = 'HKCU:\System\GameConfigStore'; Name = 'GameDVR_Enabled'; On = 0; Off = 1; Kind = 'DWord' }
+           ) }
+        @{ Type = 'tweak'; Category = 'Essential Tweaks'; Label = 'Disable location tracking';
+           Reg = @(
+               @{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location'; Name = 'Value'; On = 'Deny'; Off = 'Allow'; Kind = 'String' }
+               @{ Path = 'HKLM:\SYSTEM\Maps'; Name = 'AutoUpdateEnabled'; On = 0; Off = 1; Kind = 'DWord' }
+           ) }
+        @{ Type = 'tweak'; Category = 'Essential Tweaks'; Label = 'Disable Storage Sense';
+           Reg = @(@{ Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy'; Name = '01'; On = 0; Off = 1; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Essential Tweaks'; Label = 'Disable background apps';
+           Reg = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications'; Name = 'GlobalUserDisabled'; On = 1; Off = 0; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Essential Tweaks'; Label = 'Disable Copilot';
+           Reg = @(@{ Path = 'HKCU:\Software\Policies\Microsoft\Windows\WindowsCopilot'; Name = 'TurnOffWindowsCopilot'; On = 1; Off = 0; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Essential Tweaks'; Label = 'Disable Notepad AI features';
+           Reg = @(@{ Path = 'HKLM:\SOFTWARE\Policies\WindowsNotepad'; Name = 'DisableAIFeatures'; On = 1; Off = 0; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Essential Tweaks'; Label = 'Disable Delivery Optimization';
+           Reg = @(@{ Path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization'; Name = 'DODownloadMode'; On = 0; Off = 1; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Essential Tweaks'; Label = 'Disable Teredo (IPv6 transition)';
+           Reg = @(@{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'; Name = 'DisabledComponents'; On = 1; Off = 0; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Essential Tweaks'; Label = 'Enable long paths (>260 chars)';
+           Reg = @(@{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'; Name = 'LongPathsEnabled'; On = 1; Off = 0; Kind = 'DWord' }) }
+
+        # --- Preferences (UI / quality of life) ---
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'Show file extensions';
+           Reg = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'HideFileExt'; On = 0; Off = 1; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'Show hidden files';
+           Reg = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'Hidden'; On = 1; Off = 2; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'Dark theme (apps + system)';
+           Reg = @(
+               @{ Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; Name = 'AppsUseLightTheme';   On = 0; Off = 1; Kind = 'DWord' }
+               @{ Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'; Name = 'SystemUsesLightTheme'; On = 0; Off = 1; Kind = 'DWord' }
+           ) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'Disable Bing/web search in Start menu';
+           Reg = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search'; Name = 'BingSearchEnabled'; On = 0; Off = 1; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'Disable taskbar Widgets';
+           Reg = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'TaskbarDa'; On = 0; Off = 1; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'Disable lock screen tips/ads';
+           Reg = @(
+               @{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'; Name = 'RotatingLockScreenOverlayEnabled'; On = 0; Off = 1; Kind = 'DWord' }
+               @{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager'; Name = 'SubscribedContent-338387Enabled';  On = 0; Off = 1; Kind = 'DWord' }
+           ) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'Align taskbar to the left';
+           Reg = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'TaskbarAl'; On = 0; Off = 1; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'Hide Task View button';
+           Reg = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'ShowTaskViewButton'; On = 0; Off = 1; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'Hide taskbar Search box';
+           Reg = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search'; Name = 'SearchboxTaskbarMode'; On = 0; Off = 1; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'Show seconds in taskbar clock';
+           Reg = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'ShowSecondsInSystemClock'; On = 1; Off = 0; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'System tray battery percentage';
+           Reg = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'; Name = 'IsBatteryPercentageEnabled'; On = 1; Off = 0; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'End Task on taskbar right-click (Win11)';
+           Reg = @(@{ Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings'; Name = 'TaskbarEndTask'; On = 1; Off = 0; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'Verbose logon messages';
+           Reg = @(@{ Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'; Name = 'VerboseStatus'; On = 1; Off = 0; Kind = 'DWord' }) }
+        @{ Type = 'tweak'; Category = 'Preferences'; Label = 'NumLock on startup';
+           Reg = @(@{ Path = 'HKCU:\Control Panel\Keyboard'; Name = 'InitialKeyboardIndicators'; On = '2'; Off = '0'; Kind = 'String' }) }
+    )
+    Updates = @(
+        @{ Key = 'wu';     Label = 'Windows Update';                 Action = 'Invoke-WMWindowsUpdate';  Default = $false }
+        @{ Key = 'store';  Label = 'Microsoft Store (apps)';         Action = 'Invoke-WMStoreUpdate';    Default = $false }
+        @{ Key = 'office'; Label = 'Microsoft Office (Click-to-Run)';Action = 'Invoke-WMOfficeUpdate';   Default = $false }
+        @{ Key = 'wgall';  Label = 'winget upgrade --all';           Action = 'Invoke-WMWingetUpgradeAll';Default = $false }
+        @{ Key = 'lenovo'; Label = 'Lenovo Vantage (so Lenovo)';     Action = 'Invoke-WMLenovoVantage';  Default = $false }
+        @{ Key = 'hp';     Label = 'HP Support Assistant (so HP)';   Action = 'Invoke-WMHPSupport';      Default = $false }
+        @{ Key = 'dell';   Label = 'Dell Command | Update (so Dell)';Action = 'Invoke-WMDellCommandUpdate'; Default = $false }
+        @{ Key = 'intel';  Label = 'Intel Driver & Support Assistant';Action = 'Invoke-WMIntelDSA';      Default = $false }
+        @{ Key = 'pmp';    Label = 'Patch My PC (apps 3rd-party)';   Action = 'Invoke-WMPatchMyPC';      Default = $false }
+    )
+    Cleanup = @(
+        @{ Key = 'clean'; Label = 'Limpar temporarios + Disk Cleanup + Prefetch'; Action = 'Invoke-WMCleanup'; Default = $false }
+    )
+}
+
+# ============================================================
+#  WPF UI  (dark theme, WinUtil-style)
+# ============================================================
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+
+$xaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="CW Maintenance Utility" Height="720" Width="1180" WindowStartupLocation="CenterScreen"
+        FontSize="14" Foreground="#CDD6F4" Background="#1E1E2E">
+  <Window.Resources>
+    <SolidColorBrush x:Key="Bg"     Color="#1E1E2E"/>
+    <SolidColorBrush x:Key="Panel"  Color="#181825"/>
+    <SolidColorBrush x:Key="Fg"     Color="#CDD6F4"/>
+    <SolidColorBrush x:Key="Accent" Color="#89B4FA"/>
+    <Style TargetType="TabItem">
+      <Setter Property="Foreground" Value="#CDD6F4"/>
+      <Setter Property="Background" Value="#313244"/>
+      <Setter Property="Padding" Value="14,6"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TabItem">
+            <Border x:Name="Bd" Background="#313244" Margin="2,0" CornerRadius="4,4,0,0" Padding="14,6">
+              <ContentPresenter x:Name="Cp" ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center" TextElement.Foreground="#CDD6F4"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="#89B4FA"/>
+                <Setter TargetName="Cp" Property="TextElement.Foreground" Value="#11111B"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style TargetType="CheckBox">
+      <Setter Property="Foreground" Value="#CDD6F4"/>
+      <Setter Property="Margin" Value="6,5"/>
+      <Setter Property="FontSize" Value="14"/>
+    </Style>
+    <Style TargetType="Button">
+      <Setter Property="Background" Value="#89B4FA"/>
+      <Setter Property="Foreground" Value="#11111B"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Padding" Value="14,7"/>
+      <Setter Property="Margin" Value="4,0"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+
+  <DockPanel>
+    <Border DockPanel.Dock="Top" Background="#181825" Padding="16,10">
+      <StackPanel Orientation="Horizontal">
+        <TextBlock Text="CW Maintenance Utility" Foreground="#CDD6F4" FontSize="20" FontWeight="Bold"/>
+      </StackPanel>
+    </Border>
+
+    <Border DockPanel.Dock="Bottom" Background="#181825">
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="10">
+        <Button x:Name="BtnAll"   Content="Selecionar tudo" Background="#45475A" Foreground="#CDD6F4"/>
+        <Button x:Name="BtnNone"  Content="Limpar"          Background="#45475A" Foreground="#CDD6F4"/>
+        <Button x:Name="BtnUndo"  Content="Undo tweaks"     Background="#45475A" Foreground="#CDD6F4"/>
+        <Button x:Name="BtnRun"   Content="RUN"             Width="120"/>
+      </StackPanel>
+    </Border>
+
+    <TabControl x:Name="Tabs" Background="#1E1E2E" BorderThickness="0" Margin="8">
+      <TabItem Header="Diagnostics"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Diagnostics" Margin="10"/></ScrollViewer></TabItem>
+      <TabItem Header="Install"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Install" Margin="10"/></ScrollViewer></TabItem>
+      <TabItem Header="Tweaks"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Tweaks" Margin="10"/></ScrollViewer></TabItem>
+      <TabItem Header="Updates"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Updates" Margin="10"/></ScrollViewer></TabItem>
+      <TabItem Header="Cleanup"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Cleanup" Margin="10"/></ScrollViewer></TabItem>
+    </TabControl>
+  </DockPanel>
+</Window>
+'@
+
+$window = [Windows.Markup.XamlReader]::Parse($xaml)
+
+# Populate tabs from config; keep references to all checkboxes.
+$AllChecks = New-Object System.Collections.ArrayList
+foreach ($tab in $Config.Keys) {
+    $panel = $window.FindName("Panel_$tab")
+    if (-not $panel) { continue }
+    if (-not $Config[$tab] -or $Config[$tab].Count -eq 0) {
+        $tb = New-Object System.Windows.Controls.TextBlock
+        $tb.Text = "Coming soon (next phase)."
+        $tb.Foreground = '#A6ADC8'
+        $tb.Margin = '6,8'
+        $panel.Children.Add($tb) | Out-Null
+        continue
+    }
+    if ($Config[$tab][0].Category) {
+        # WinUtil-style: multi-column grid of category blocks.
+        $wrap = New-Object System.Windows.Controls.WrapPanel
+        $wrap.Orientation = 'Horizontal'
+        $cats = [ordered]@{}
+        foreach ($item in $Config[$tab]) {
+            if (-not $cats.Contains($item.Category)) { $cats[$item.Category] = New-Object System.Collections.ArrayList }
+            $cats[$item.Category].Add($item) | Out-Null
+        }
+        foreach ($cat in $cats.Keys) {
+            $col = New-Object System.Windows.Controls.StackPanel
+            $col.Width = 250; $col.Margin = '4,4,18,12'
+            $hdr = New-Object System.Windows.Controls.TextBlock
+            $hdr.Text = $cat; $hdr.FontWeight = 'Bold'; $hdr.FontSize = 14; $hdr.Foreground = '#89DCEB'; $hdr.Margin = '0,0,0,4'
+            $col.Children.Add($hdr) | Out-Null
+            foreach ($item in $cats[$cat]) {
+                $cb = New-Object System.Windows.Controls.CheckBox
+                $cb.Content = $item.Label; $cb.IsChecked = [bool]$item.Default; $cb.Tag = $item
+                $col.Children.Add($cb) | Out-Null
+                $AllChecks.Add($cb) | Out-Null
+            }
+            $wrap.Children.Add($col) | Out-Null
+        }
+        $panel.Children.Add($wrap) | Out-Null
+        continue
+    }
+    foreach ($item in $Config[$tab]) {
+        $cb = New-Object System.Windows.Controls.CheckBox
+        $cb.Content   = $item.Label
+        $cb.IsChecked = [bool]$item.Default
+        $cb.Tag       = $item
+        $panel.Children.Add($cb) | Out-Null
+        $AllChecks.Add($cb) | Out-Null
+    }
+}
+
+$BtnRun = $window.FindName('BtnRun')
+$BtnAll = $window.FindName('BtnAll')
+$BtnNone = $window.FindName('BtnNone')
+$BtnUndo = $window.FindName('BtnUndo')
+
+$BtnAll.Add_Click({ foreach ($c in $AllChecks) { $c.IsChecked = $true } })
+$BtnNone.Add_Click({ foreach ($c in $AllChecks) { $c.IsChecked = $false } })
+
+# Build the initial-session-state for the worker runspace: inject all engine functions.
+$engineFns = Get-ChildItem Function:\ | Where-Object { $_.Name -match 'WM' -and $_.Name -ne 'Resolve-WMWinget' }
+$iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+foreach ($fn in $engineFns) {
+    $iss.Commands.Add(
+        (New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($fn.Name, $fn.Definition))
+    )
+}
+
+# Completion watcher (UI thread): re-enables the RUN button when the worker finishes.
+$timer = New-Object System.Windows.Threading.DispatcherTimer
+$timer.Interval = [TimeSpan]::FromMilliseconds(200)
+$script:WMps = $null
+$script:WMhandle = $null
+$timer.Add_Tick({
+    if ($script:WMhandle -and $script:WMhandle.IsCompleted) {
+        try { $script:WMps.EndInvoke($script:WMhandle) } catch {}
+        $script:WMps.Runspace.Dispose(); $script:WMps.Dispose()
+        $script:WMps = $null; $script:WMhandle = $null
+        $sync.Running = $false
+        $BtnRun.Content = 'RUN'; $BtnRun.IsEnabled = $true; $BtnUndo.IsEnabled = $true
+        Write-Host "`r`n==== DONE ====`r`n" -ForegroundColor Green
+    }
+})
+$timer.Start()
+
+# Run the checked items in the worker. $Mode is 'apply' (RUN) or 'undo' (revert
+# tweaks). In undo mode only tweaks act; installs/updates/diagnostics are skipped.
+function Start-WMRun {
+    param([string]$Mode)
+    if ($sync.Running) { return }
+    $selected = @($AllChecks | Where-Object { $_.IsChecked } | ForEach-Object { $_.Tag })
+    if (-not $selected.Count) { Write-Host "Nothing selected." -ForegroundColor Yellow; return }
+
+    $sync.Running = $true
+    $BtnRun.Content = if ($Mode -eq 'undo') { 'Undoing...' } else { 'Running...' }
+    $BtnRun.IsEnabled = $false; $BtnUndo.IsEnabled = $false
+
+    $rs = [runspacefactory]::CreateRunspace($Host, $iss)
+    $rs.ApartmentState = 'STA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
+    $rs.SessionStateProxy.SetVariable('sync', $sync)
+    $rs.SessionStateProxy.SetVariable('Winget', $Winget)
+
+    $ps = [powershell]::Create(); $ps.Runspace = $rs
+    $ps.AddScript({
+        param($items, $mode)
+        try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+        $tweaked = $false
+        foreach ($it in $items) {
+            try {
+                if ($it.Type -eq 'tweak') { $tweaked = $true; Invoke-WMTweak $it $mode }
+                elseif ($mode -eq 'apply') {
+                    if ($it.Type -eq 'app') { Install-WMApp $it }
+                    else { & $it.Action }
+                }
+            } catch { Write-WMLog "Error in $($it.Label): $_" err }
+        }
+        if ($tweaked) {
+            Write-WMLog "Restarting Explorer to apply changes..." step
+            Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+        }
+    }).AddArgument($selected).AddArgument($Mode) | Out-Null
+
+    $script:WMps = $ps
+    $script:WMhandle = $ps.BeginInvoke()
+}
+
+$BtnRun.Add_Click({ Start-WMRun 'apply' })
+$BtnUndo.Add_Click({ Start-WMRun 'undo' })
+
+if ($SelfTest) {
+    Write-Host "SelfTest OK: XAML loaded, $($AllChecks.Count) checkbox(es) generated, $($engineFns.Count) engine functions."
+    return
+}
+
+$window.ShowDialog() | Out-Null
