@@ -1039,6 +1039,7 @@ $Config = [ordered]@{
         @{ Type = 'app'; Category = 'Utilities'; Label = 'qBittorrent';      WingetId = 'qBittorrent.qBittorrent' }
         @{ Type = 'app'; Category = 'Utilities'; Label = 'Revo Uninstaller'; WingetId = 'RevoUninstaller.RevoUninstaller' }
         @{ Type = 'app'; Category = 'Utilities'; Label = 'WizTree';          WingetId = 'AntibodySoftware.WizTree' }
+        @{ Type = 'app'; Category = 'Utilities'; Label = 'WinDirStat';       WingetId = 'WinDirStat.WinDirStat' }
     )
     Tweaks  = @(
         # --- Essential Tweaks (privacy / debloat / performance) ---
