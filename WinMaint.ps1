@@ -112,9 +112,10 @@ function Resolve-WMWinget {
     if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source) -and ((Get-Item $cmd.Source).Length -gt 0)) {
         return $cmd.Source
     }
-    # From the App Installer package. Try -AllUsers first (an elevated/admin session
-    # does not see the logged-in user's per-user packages otherwise), then current user.
-    foreach ($all in @($true, $false)) {
+    # From the App Installer package. Try the CURRENT (elevated) user first: that
+    # package is executable by this process. Only then fall back to -AllUsers
+    # (another user's package may resolve but fail to run with "Access denied").
+    foreach ($all in @($false, $true)) {
         try {
             $pkgs = if ($all) { Get-AppxPackage -AllUsers -Name 'Microsoft.DesktopAppInstaller' -ErrorAction Stop }
                     else      { Get-AppxPackage -Name 'Microsoft.DesktopAppInstaller' -ErrorAction Stop }
@@ -739,6 +740,12 @@ function Invoke-WMWingetReinstall {
         $bundle = Join-Path $tmp 'winget.msixbundle'
         Invoke-WebRequest 'https://aka.ms/getwinget' -OutFile $bundle -UseBasicParsing -ErrorAction Stop
         Add-AppxPackage $bundle -ErrorAction Stop
+        # Provision machine-wide so the elevated (admin) session can execute winget
+        # even when the interactive user differs.
+        try {
+            $deps = @($vclibs); if ($xaml) { $deps += $xaml.FullName }
+            Add-AppxProvisionedPackage -Online -PackagePath $bundle -DependencyPackagePath $deps -SkipLicense -ErrorAction Stop | Out-Null
+        } catch { Write-WMLog "  (machine-wide provisioning skipped: $_)" warn }
         if (Resolve-WMWinget) { Write-WMLog "winget installed." ok; return }
         Write-WMLog "Bundle installed but winget still not resolved; trying module method..." warn
     } catch {
