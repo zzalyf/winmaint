@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.06.29-r4'   # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.06.29-r5'   # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -498,7 +498,9 @@ function Install-WMApp {
     $instArgs = @('install', '--id', $Id, '--accept-package-agreements', '--accept-source-agreements', '--silent')
     if ($App.Source) { $instArgs += @('--source', $App.Source) }
     Invoke-WMWinget $instArgs
-    Write-WMLog "${Name}: installation complete." ok
+    $code = $LASTEXITCODE
+    if ($null -eq $code -or $code -eq 0) { Write-WMLog "${Name}: installed." ok }
+    else { Write-WMLog "${Name}: winget returned exit code $code (may have failed)." warn }
 }
 
 # --- Updates -------------------------------------------------
@@ -950,7 +952,8 @@ function Invoke-WMDefenderFull {
 function Invoke-WMCreateAdmin {
     Write-WMLog "CREATE LOCAL ADMINISTRATOR (itadmin)" head
     $u = 'itadmin'
-    $pw = ConvertTo-SecureString 'itadmin' -AsPlainText -Force
+    $plain = if ($sync.AdminPw) { $sync.AdminPw } else { 'itadmin' }
+    $pw = ConvertTo-SecureString $plain -AsPlainText -Force
     try {
         if (Get-LocalUser -Name $u -ErrorAction SilentlyContinue) {
             Set-LocalUser -Name $u -Password $pw -ErrorAction Stop
@@ -1348,6 +1351,24 @@ function Get-WMTweakState {
     } catch { return $false }
 }
 
+# Build an informative tooltip from the item's own data (no hand-written prose).
+function Get-WMTooltip {
+    param($It)
+    switch ($It.Type) {
+        'tweak' {
+            $p = @($It.Reg | ForEach-Object { "$($_.Path)\$($_.Name)  ->  on=$($_.On) / off=$($_.Off)" })
+            if ($It.SvcOff) { $p += "Services disabled on apply: $($It.SvcOff -join ', ')" }
+            if ($It.ApplyScript) { $p += "Script: $($It.ApplyScript)" }
+            return ($p -join "`n")
+        }
+        'app'     { return "winget id: $($It.WingetId)$(if ($It.Source) { "  (source: $($It.Source))" })" }
+        'openapp' { return "Opens (installs if missing) - winget id: $($It.WingetId)" }
+        'debloat' { return "Removes: $($It.Appx -join ', ')" }
+        'feature' { return "DISM feature(s): $($It.Feature -join ', ')" }
+        default   { return $It.Desc }
+    }
+}
+
 # Populate tabs from config; keep references to all checkboxes.
 $AllChecks = New-Object System.Collections.ArrayList
 foreach ($tab in $Config.Keys) {
@@ -1385,6 +1406,7 @@ foreach ($tab in $Config.Keys) {
                         $b.Content = $item.Label; $b.Tag = $item; $b.Margin = '0,3'
                         $b.HorizontalAlignment = 'Stretch'; $b.HorizontalContentAlignment = 'Left'
                         $b.Background = '#45475A'; $b.Foreground = '#CDD6F4'
+                        $b.ToolTip = Get-WMTooltip $item
                         $b.Add_Click({ Start-WMRunItems @($this.Tag) 'apply' $false })
                         $col.Children.Add($b) | Out-Null
                     }
@@ -1392,6 +1414,7 @@ foreach ($tab in $Config.Keys) {
                         # Immediate enable/disable switch, reflecting current system state.
                         $tg = New-Object System.Windows.Controls.Primitives.ToggleButton
                         $tg.Content = $item.Label; $tg.Tag = $item
+                        $tg.ToolTip = Get-WMTooltip $item
                         $tg.IsChecked = (Get-WMTweakState $item)
                         $tg.Add_Click({ $m = if ($this.IsChecked) { 'apply' } else { 'undo' }; Start-WMRunItems @($this.Tag) $m $true })
                         $col.Children.Add($tg) | Out-Null
@@ -1399,6 +1422,7 @@ foreach ($tab in $Config.Keys) {
                     default {
                         $cb = New-Object System.Windows.Controls.CheckBox
                         $cb.Content = $item.Label; $cb.IsChecked = [bool]$item.Default; $cb.Tag = $item
+                        $cb.ToolTip = Get-WMTooltip $item
                         $col.Children.Add($cb) | Out-Null
                         $AllChecks.Add($cb) | Out-Null
                     }
@@ -1440,6 +1464,7 @@ foreach ($tab in $Config.Keys) {
         $cb.Content   = $item.Label
         $cb.IsChecked = [bool]$item.Default
         $cb.Tag       = $item
+        $cb.ToolTip   = Get-WMTooltip $item
         $panel.Children.Add($cb) | Out-Null
         $AllChecks.Add($cb) | Out-Null
     }
@@ -1514,6 +1539,21 @@ function Start-WMRunItems {
     param([object[]]$Items, [string]$Mode, [bool]$Restart)
     if ($sync.Running) { return }
     if (-not $Items -or $Items.Count -eq 0) { Write-Host "Nothing selected." -ForegroundColor Yellow; return }
+
+    # --- Confirmations for sensitive items (UI thread, before launching) -------
+    if ($Mode -eq 'apply') {
+        $deb = @($Items | Where-Object { $_.Type -eq 'debloat' })
+        if ($deb.Count) {
+            $r = [System.Windows.MessageBox]::Show("Remove $($deb.Count) preinstalled app(s)? This cannot be undone.", "Confirm Debloat", 'YesNo', 'Warning')
+            if ($r -ne 'Yes') { return }
+        }
+        if ($Items | Where-Object { $_.Action -eq 'Invoke-WMCreateAdmin' }) {
+            try { Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction SilentlyContinue } catch {}
+            $pw = [Microsoft.VisualBasic.Interaction]::InputBox("Password for the local admin 'itadmin':", "Create local admin", "itadmin")
+            if (-not $pw) { return }
+            $sync.AdminPw = $pw
+        }
+    }
 
     # Re-resolve winget each run so a repair/install during this session is picked
     # up without restarting the app.
