@@ -911,7 +911,7 @@ function Invoke-WMPanel {
         'compmgmt'  { Start-Process compmgmt.msc }
         'services'  { Start-Process services.msc }
         'cleanmgr'  { Start-Process cleanmgr.exe }
-        'printers'  { Start-Process control.exe -ArgumentList 'printers' }
+        'printers'  { Start-Process explorer.exe -ArgumentList 'shell:::{A8A91A66-3A7D-4424-8D24-04E180695C7A}' }  # legacy Devices and Printers
     }
 }
 function Invoke-WMControlPanel    { Invoke-WMPanel 'control';  Write-WMLog "Opened Control Panel." ok }
