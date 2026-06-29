@@ -768,6 +768,24 @@ function Invoke-WMEnableNtp {
     Write-WMLog "Time sync enabled." ok
 }
 
+function Invoke-WMRestorePoint {
+    Write-WMLog "CREATE SYSTEM RESTORE POINT" head
+    try {
+        Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
+        # Allow more than one restore point per 24h (default throttle).
+        New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore' -Name 'SystemRestorePointCreationFrequency' -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null
+        Checkpoint-Computer -Description "WinMaint $(Get-Date -Format 'yyyy-MM-dd HH:mm')" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+        Write-WMLog "Restore point created." ok
+    } catch { Write-WMLog "Could not create restore point (System Protection may be off): $_" err }
+}
+
+function Invoke-WMOpenReports {
+    Write-WMLog "OPEN REPORTS FOLDER" head
+    $folder = Split-Path $sync.LogFile
+    Start-Process explorer.exe -ArgumentList $folder
+    Write-WMLog "Opened $folder" ok
+}
+
 function Invoke-WMEnableOpenSSH {
     Write-WMLog "ENABLE OPENSSH SERVER" head
     try {
@@ -991,6 +1009,7 @@ $Config = [ordered]@{
         @{ Type = 'feature'; Category = 'Features'; Label = 'Legacy Media (DirectPlay)';  Feature = @('DirectPlay') }
         @{ Type = 'feature'; Category = 'Features'; Label = 'NFS Client';                 Feature = @('ServicesForNFS-ClientOnly', 'ClientForNFS-Infrastructure') }
         # Fixes
+        @{ Type = 'fn'; Category = 'Fixes'; Label = 'Create System Restore Point';        Action = 'Invoke-WMRestorePoint' }
         @{ Type = 'fn'; Category = 'Fixes'; Label = 'System Corruption Scan (SFC + DISM)'; Action = 'Invoke-WMSfcDism' }
         @{ Type = 'fn'; Category = 'Fixes'; Label = 'Windows Update - Reset';              Action = 'Invoke-WMWUReset' }
         @{ Type = 'fn'; Category = 'Fixes'; Label = 'Network - Reset';                     Action = 'Invoke-WMNetworkReset' }
@@ -1020,6 +1039,7 @@ $Config = [ordered]@{
         @{ Category = 'Updates'; Label = 'Intel Driver & Support Assistant'; Action = 'Invoke-WMIntelDSA';          Default = $false }
         @{ Category = 'Cleanup'; Label = 'Clean temp + Disk Cleanup + Prefetch (C: only)'; Action = 'Invoke-WMCleanup'; Default = $false }
         @{ Category = 'Tools'; Control = 'button'; Type = 'fn'; Label = 'Open CrystalDiskInfo'; Action = 'Invoke-WMOpenCrystalDiskInfo' }
+        @{ Category = 'Tools'; Control = 'button'; Type = 'fn'; Label = 'Open reports folder';  Action = 'Invoke-WMOpenReports' }
     )
 }
 
@@ -1375,7 +1395,7 @@ function Start-WMRunItems {
             if ($wgWorks) { Write-WMLog "winget ready." ok } else { Write-WMLog "winget still unavailable; app installs may fail." warn }
         }
 
-        $tweaked = $false
+        $tweaked = $false; $done = 0; $failed = 0
         foreach ($it in $items) {
             try {
                 if ($it.Type -eq 'tweak')        { $tweaked = $true; Invoke-WMTweak $it $mode }
@@ -1383,13 +1403,16 @@ function Start-WMRunItems {
                 elseif ($mode -eq 'apply') {
                     if ($it.Type -eq 'app') { Install-WMApp $it }
                     else { & $it.Action }
-                }
-            } catch { Write-WMLog "Error in $($it.Label): $_" err }
+                } else { continue }
+                $done++
+            } catch { $failed++; Write-WMLog "Error in $($it.Label): $_" err }
         }
         if ($tweaked -and $restart) {
             Write-WMLog "Restarting Explorer to apply changes..." step
             Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
         }
+        $lvl = if ($failed) { 'warn' } else { 'ok' }
+        Write-WMLog "Summary: $done item(s) processed, $failed error(s)." $lvl
     }).AddArgument($Items).AddArgument($Mode).AddArgument($Restart) | Out-Null
 
     $script:WMps = $ps
