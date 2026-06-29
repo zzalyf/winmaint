@@ -796,6 +796,40 @@ function Invoke-WMEnableOpenSSH {
     } catch { Write-WMLog "Could not enable OpenSSH Server: $_" err }
 }
 
+# --- Debloat: remove preinstalled UWP apps (apply-only) -----
+function Invoke-WMDebloat {
+    param($D)
+    Write-WMLog "Remove: $($D.Label)" step
+    foreach ($n in $D.Appx) {
+        try {
+            Get-AppxPackage -AllUsers -Name $n -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+            Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
+                Where-Object { $_.DisplayName -like $n } |
+                ForEach-Object { Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null }
+        } catch { Write-WMLog "  ${n}: $_" warn }
+    }
+    Write-WMLog "$($D.Label): removed." ok
+}
+
+# --- Config: DNS -------------------------------------------
+function Set-WMDns {
+    param([string]$Primary, [string]$Secondary, [string]$Label)
+    Write-WMLog "SET DNS -> $Label" head
+    $nics = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' }
+    foreach ($n in $nics) {
+        try {
+            if ($Primary) { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ServerAddresses $Primary, $Secondary -ErrorAction Stop }
+            else { Set-DnsClientServerAddress -InterfaceIndex $n.ifIndex -ResetServerAddresses -ErrorAction Stop }
+            Write-WMLog "  $($n.Name): $Label" ok
+        } catch { Write-WMLog "  $($n.Name): $_" warn }
+    }
+    ipconfig /flushdns | Out-Null
+}
+function Invoke-WMDnsCloudflare { Set-WMDns '1.1.1.1' '1.0.0.1' 'Cloudflare (1.1.1.1)' }
+function Invoke-WMDnsGoogle     { Set-WMDns '8.8.8.8' '8.8.4.4' 'Google (8.8.8.8)' }
+function Invoke-WMDnsQuad9       { Set-WMDns '9.9.9.9' '149.112.112.112' 'Quad9 (9.9.9.9)' }
+function Invoke-WMDnsAuto        { Set-WMDns $null $null 'Automatic (DHCP)' }
+
 # --- Config: Legacy panels (open built-in tools) ------------
 function Invoke-WMPanel {
     param([string]$What)
@@ -998,6 +1032,22 @@ $Config = [ordered]@{
            Reg = @(@{ Path = 'HKCU:\Control Panel\Accessibility\StickyKeys'; Name = 'Flags'; On = '506'; Off = '58'; Kind = 'String' }) }
         @{ Type = 'tweak'; Category = 'Advanced Tweaks (CAUTION)'; Label = 'Detailed BSoD information';
            Reg = @(@{ Path = 'HKLM:\SYSTEM\CurrentControlSet\Control\CrashControl'; Name = 'DisplayParameters'; On = 1; Off = 0; Kind = 'DWord' }) }
+
+        # --- Debloat (remove preinstalled apps; not reversible) ---
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'News + Weather';        Appx = @('Microsoft.BingNews', 'Microsoft.BingWeather') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'Xbox apps';             Appx = @('Microsoft.GamingApp', 'Microsoft.XboxApp', 'Microsoft.XboxGamingOverlay', 'Microsoft.XboxIdentityProvider', 'Microsoft.XboxSpeechToTextOverlay', 'Microsoft.Xbox.TCUI') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'Solitaire Collection';  Appx = @('Microsoft.MicrosoftSolitaireCollection') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'Mail and Calendar';     Appx = @('microsoft.windowscommunicationsapps') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'Maps';                  Appx = @('Microsoft.WindowsMaps') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'People';                Appx = @('Microsoft.People') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'Get Help + Tips';       Appx = @('Microsoft.GetHelp', 'Microsoft.Getstarted') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'Office Hub + To Do';    Appx = @('Microsoft.MicrosoftOfficeHub', 'Microsoft.Todos') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'Clipchamp';             Appx = @('Clipchamp.Clipchamp') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'Feedback Hub';          Appx = @('Microsoft.WindowsFeedbackHub') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'Teams (consumer)';      Appx = @('MicrosoftTeams', 'MSTeams') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'Zune Music + Video';    Appx = @('Microsoft.ZuneMusic', 'Microsoft.ZuneVideo') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'Power Automate';        Appx = @('Microsoft.PowerAutomateDesktop') }
+        @{ Type = 'debloat'; Category = 'Debloat (remove bloatware)'; Label = 'Quick Assist';          Appx = @('MicrosoftCorporationII.QuickAssist') }
     )
     Config  = @(
         # Features (DISM optional features)
@@ -1027,6 +1077,11 @@ $Config = [ordered]@{
         @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Devices and Printers'; Action = 'Invoke-WMPrintersPanel' }
         # Remote Access
         @{ Type = 'fn'; Category = 'Remote Access'; Label = 'OpenSSH Server - Enable'; Action = 'Invoke-WMEnableOpenSSH' }
+        # DNS (applies to active physical adapters)
+        @{ Type = 'fn'; Category = 'DNS'; Label = 'Cloudflare (1.1.1.1)'; Action = 'Invoke-WMDnsCloudflare' }
+        @{ Type = 'fn'; Category = 'DNS'; Label = 'Google (8.8.8.8)';     Action = 'Invoke-WMDnsGoogle' }
+        @{ Type = 'fn'; Category = 'DNS'; Label = 'Quad9 (9.9.9.9)';      Action = 'Invoke-WMDnsQuad9' }
+        @{ Type = 'fn'; Category = 'DNS'; Label = 'Automatic (DHCP)';     Action = 'Invoke-WMDnsAuto' }
     )
     StandardMaintenance = @(
         @{ Category = 'Updates'; Label = 'Windows Update';                  Action = 'Invoke-WMWindowsUpdate'; Default = $false }
@@ -1401,7 +1456,8 @@ function Start-WMRunItems {
                 if ($it.Type -eq 'tweak')        { $tweaked = $true; Invoke-WMTweak $it $mode }
                 elseif ($it.Type -eq 'feature')  { Invoke-WMFeature $it $mode }
                 elseif ($mode -eq 'apply') {
-                    if ($it.Type -eq 'app') { Install-WMApp $it }
+                    if ($it.Type -eq 'app')         { Install-WMApp $it }
+                    elseif ($it.Type -eq 'debloat') { Invoke-WMDebloat $it }
                     else { & $it.Action }
                 } else { continue }
                 $done++
