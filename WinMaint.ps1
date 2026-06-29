@@ -269,25 +269,51 @@ function Invoke-WMStartupItems {
 }
 
 function Invoke-WMEventLog {
-    Write-WMLog "EVENT LOG CHECK (ultimos 7 dias)" head
+    Write-WMLog "EVENT LOG CHECK (critical / useful, last 7 days)" head
     $since = (Get-Date).AddDays(-7)
+    $txt = Join-Path (Split-Path $sync.LogFile) 'EventLog.txt'
+    $collected = New-Object System.Collections.ArrayList
+
+    # Critical (Level 1) events from System + Application.
     foreach ($log in @("System", "Application")) {
         try {
-            $crit = Get-WinEvent -FilterHashtable @{ LogName = $log; Level = 1; StartTime = $since } -ErrorAction SilentlyContinue
-            $errs = Get-WinEvent -FilterHashtable @{ LogName = $log; Level = 2; StartTime = $since } -ErrorAction SilentlyContinue
-            $cC = ($crit | Measure-Object).Count
-            $eC = ($errs | Measure-Object).Count
-            Write-WMLog "$log Log  |  Critical: $cC  |  Errors: $eC"
-            $top = if ($cC) { $crit | Sort-Object TimeCreated -Descending | Select-Object -First 5 }
-                   elseif ($eC) { $errs | Sort-Object TimeCreated -Descending | Select-Object -First 5 }
-            foreach ($ev in $top) {
-                $lvl = if ($ev.Level -eq 1) { "CRITICAL" } else { "ERROR" }
-                $msg = ($ev.Message -split "`n")[0].Trim()
-                if ($msg.Length -gt 110) { $msg = $msg.Substring(0, 110) + "..." }
-                Write-WMLog "  [$lvl $($ev.TimeCreated.ToString('yyyy-MM-dd HH:mm'))] $($ev.ProviderName) - $msg"
-            }
-        } catch { Write-WMLog "Could not read $log log: $_" warn }
+            Get-WinEvent -FilterHashtable @{ LogName = $log; Level = 1; StartTime = $since } -ErrorAction SilentlyContinue |
+                ForEach-Object { [void]$collected.Add($_) }
+        } catch {}
     }
+    # Useful non-critical signals: unexpected shutdown (41), dirty shutdown (6008),
+    # and bugcheck / BSoD (1001).
+    try {
+        Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 41, 6008, 1001; StartTime = $since } -ErrorAction SilentlyContinue |
+            ForEach-Object { [void]$collected.Add($_) }
+    } catch {}
+
+    $events = $collected | Sort-Object TimeCreated -Descending
+    if (-not $events -or $events.Count -eq 0) {
+        Write-WMLog "No critical events in the last 7 days." ok
+        "No critical events in the last 7 days (generated $(Get-Date))." | Set-Content -Path $txt -Encoding UTF8
+        Write-WMLog "Report saved to $txt" ok
+        return
+    }
+
+    Write-WMLog "$($events.Count) critical/relevant event(s) found:" warn
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine("CW Maintenance Utility - Critical event report")
+    [void]$sb.AppendLine("Generated: $(Get-Date)   Window: last 7 days")
+    [void]$sb.AppendLine(("-" * 60))
+    foreach ($ev in $events) {
+        $lvl = switch ($ev.Level) { 1 { 'CRITICAL' } 2 { 'ERROR' } default { 'INFO' } }
+        $head = "[$lvl] $($ev.TimeCreated.ToString('yyyy-MM-dd HH:mm')) | $($ev.LogName) | $($ev.ProviderName) | Id $($ev.Id)"
+        $msg = ($ev.Message -split "`n")[0].Trim()
+        if ($msg.Length -gt 110) { $msg = $msg.Substring(0, 110) + "..." }
+        Write-WMLog "  $head"
+        if ($msg) { Write-WMLog "      $msg" }
+        [void]$sb.AppendLine($head)
+        [void]$sb.AppendLine("  $($ev.Message)")
+        [void]$sb.AppendLine("")
+    }
+    try { $sb.ToString() | Set-Content -Path $txt -Encoding UTF8; Write-WMLog "Full report saved to $txt" ok }
+    catch { Write-WMLog "Could not save report: $_" warn }
 }
 
 function Invoke-WMCleanup {
@@ -713,9 +739,11 @@ function Invoke-WMPanel {
         'compmgmt'  { Start-Process compmgmt.msc }
         'services'  { Start-Process services.msc }
         'cleanmgr'  { Start-Process cleanmgr.exe }
+        'printers'  { Start-Process control.exe -ArgumentList 'printers' }
     }
 }
 function Invoke-WMControlPanel    { Invoke-WMPanel 'control';  Write-WMLog "Opened Control Panel." ok }
+function Invoke-WMPrintersPanel   { Invoke-WMPanel 'printers'; Write-WMLog "Opened Devices and Printers." ok }
 function Invoke-WMNetworkPanel    { Invoke-WMPanel 'ncpa';     Write-WMLog "Opened Network Connections." ok }
 function Invoke-WMPowerPanel      { Invoke-WMPanel 'powercfg'; Write-WMLog "Opened Power Options." ok }
 function Invoke-WMSoundPanel      { Invoke-WMPanel 'mmsys';    Write-WMLog "Opened Sound Settings." ok }
@@ -723,6 +751,26 @@ function Invoke-WMSystemPanel     { Invoke-WMPanel 'sysdm';    Write-WMLog "Open
 function Invoke-WMDeviceManager   { Invoke-WMPanel 'devmgmt';  Write-WMLog "Opened Device Manager." ok }
 function Invoke-WMComputerMgmt    { Invoke-WMPanel 'compmgmt'; Write-WMLog "Opened Computer Management." ok }
 function Invoke-WMServicesPanel   { Invoke-WMPanel 'services'; Write-WMLog "Opened Services." ok }
+
+# --- Standard Maintenance: open CrystalDiskInfo -------------
+function Invoke-WMOpenCrystalDiskInfo {
+    Write-WMLog "CRYSTALDISKINFO" head
+    $paths = @(
+        "${env:ProgramFiles}\CrystalDiskInfo\DiskInfo64.exe",
+        "${env:ProgramFiles(x86)}\CrystalDiskInfo\DiskInfo64.exe",
+        "${env:ProgramFiles}\CrystalDiskInfo\DiskInfo32.exe",
+        "${env:ProgramFiles(x86)}\CrystalDiskInfo\DiskInfo32.exe"
+    )
+    $exe = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $exe -and $Winget) {
+        Write-WMLog "Not found; installing via winget..." step
+        Invoke-WMWinget @('install', '--id', 'CrystalDewWorld.CrystalDiskInfo', '--accept-package-agreements', '--accept-source-agreements', '--silent')
+        Start-Sleep -Seconds 3
+        $exe = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+    if ($exe) { Start-Process $exe; Write-WMLog "CrystalDiskInfo opened." ok }
+    else { Write-WMLog "Could not locate CrystalDiskInfo." warn }
+}
 
 # ============================================================
 #  CONFIG  -  drives the checkboxes per tab.
@@ -905,6 +953,7 @@ $Config = [ordered]@{
         @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Device Manager';       Action = 'Invoke-WMDeviceManager' }
         @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Computer Management';  Action = 'Invoke-WMComputerMgmt' }
         @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Services';             Action = 'Invoke-WMServicesPanel' }
+        @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Devices and Printers'; Action = 'Invoke-WMPrintersPanel' }
         # Remote Access
         @{ Type = 'fn'; Category = 'Remote Access'; Label = 'OpenSSH Server - Enable'; Action = 'Invoke-WMEnableOpenSSH' }
     )
@@ -918,6 +967,7 @@ $Config = [ordered]@{
         @{ Category = 'Updates'; Label = 'Dell Command | Update';            Action = 'Invoke-WMDellCommandUpdate'; Default = $false; OemMatch = 'Dell' }
         @{ Category = 'Updates'; Label = 'Intel Driver & Support Assistant'; Action = 'Invoke-WMIntelDSA';          Default = $false }
         @{ Category = 'Cleanup'; Label = 'Clean temp + Disk Cleanup + Prefetch (C: only)'; Action = 'Invoke-WMCleanup'; Default = $false }
+        @{ Category = 'Tools'; Control = 'button'; Type = 'fn'; Label = 'Open CrystalDiskInfo'; Action = 'Invoke-WMOpenCrystalDiskInfo' }
     )
 }
 
@@ -977,6 +1027,33 @@ $xaml = @'
       <Setter Property="Margin" Value="6,5"/>
       <Setter Property="FontSize" Value="14"/>
     </Style>
+    <Style TargetType="ToggleButton">
+      <Setter Property="Foreground" Value="#CDD6F4"/>
+      <Setter Property="Margin" Value="6,5"/>
+      <Setter Property="FontSize" Value="14"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ToggleButton">
+            <StackPanel Orientation="Horizontal" Background="Transparent">
+              <Border x:Name="track" Width="38" Height="20" CornerRadius="10" Background="#45475A" VerticalAlignment="Center">
+                <Border x:Name="knob" Width="14" Height="14" CornerRadius="7" Background="#CDD6F4" HorizontalAlignment="Left" Margin="3,0,0,0"/>
+              </Border>
+              <ContentPresenter VerticalAlignment="Center" Margin="8,0,0,0"/>
+            </StackPanel>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="track" Property="Background" Value="#89B4FA"/>
+                <Setter TargetName="knob" Property="HorizontalAlignment" Value="Right"/>
+                <Setter TargetName="knob" Property="Margin" Value="0,0,3,0"/>
+                <Setter TargetName="knob" Property="Background" Value="#11111B"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <Style TargetType="Button">
       <Setter Property="Background" Value="#89B4FA"/>
       <Setter Property="Foreground" Value="#11111B"/>
@@ -1013,11 +1090,11 @@ $xaml = @'
     </Border>
 
     <TabControl x:Name="Tabs" Background="#1E1E2E" BorderThickness="0" Margin="8">
+      <TabItem Header="Standard Maintenance"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_StandardMaintenance" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Diagnostics"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Diagnostics" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Install"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Install" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Tweaks"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Tweaks" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Config"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Config" Margin="10"/></ScrollViewer></TabItem>
-      <TabItem Header="Standard Maintenance"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_StandardMaintenance" Margin="10"/></ScrollViewer></TabItem>
     </TabControl>
   </DockPanel>
 </Window>
@@ -1077,12 +1154,12 @@ foreach ($tab in $Config.Keys) {
                         $col.Children.Add($b) | Out-Null
                     }
                     'toggle' {
-                        # Immediate enable/disable, reflecting current system state.
-                        $cb = New-Object System.Windows.Controls.CheckBox
-                        $cb.Content = $item.Label; $cb.Tag = $item
-                        $cb.IsChecked = (Get-WMTweakState $item)
-                        $cb.Add_Click({ $m = if ($this.IsChecked) { 'apply' } else { 'undo' }; Start-WMRunItems @($this.Tag) $m $true })
-                        $col.Children.Add($cb) | Out-Null
+                        # Immediate enable/disable switch, reflecting current system state.
+                        $tg = New-Object System.Windows.Controls.Primitives.ToggleButton
+                        $tg.Content = $item.Label; $tg.Tag = $item
+                        $tg.IsChecked = (Get-WMTweakState $item)
+                        $tg.Add_Click({ $m = if ($this.IsChecked) { 'apply' } else { 'undo' }; Start-WMRunItems @($this.Tag) $m $true })
+                        $col.Children.Add($tg) | Out-Null
                     }
                     default {
                         $cb = New-Object System.Windows.Controls.CheckBox
