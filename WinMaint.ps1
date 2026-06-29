@@ -1365,6 +1365,10 @@ function Start-WMRunItems {
     $ps.AddScript({
         param($items, $mode, $restart)
         try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
+        # Invoke-WebRequest is dramatically slower in PS 5.1 while it renders a
+        # progress bar; disabling it speeds downloads up by 10-50x.
+        $ProgressPreference = 'SilentlyContinue'
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
         $tweaked = $false
         foreach ($it in $items) {
             try {
