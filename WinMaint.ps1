@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.06.29-r7'   # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.06.29-r8'   # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -974,8 +974,41 @@ function Invoke-WMCreateAdmin {
         if (-not (Get-LocalGroupMember -Group $grp -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*\$u" })) {
             Add-LocalGroupMember -Group $grp -Member $u -ErrorAction Stop
         }
-        Write-WMLog "'$u' is a member of '$grp'. Password: itadmin" ok
+        Write-WMLog "'$u' is a member of '$grp'." ok
     } catch { Write-WMLog "Could not create local admin: $_" err }
+}
+
+# --- Supremo deploy (per client) ----------------------------
+# Downloads Supremo.exe (hosted in the repo) to C:\WinMaint, then runs the
+# unattended /deploy with the selected client's password + group id.
+function Invoke-WMSupremoDeploy {
+    param($C)
+    Write-WMLog "SUPREMO DEPLOY: $($C.Label)" head
+    $token = 'HSiymjaFA9WAfYtmW_wzk3J9S2SwTEav3xsgoWPYTwidK4dQSnygfW9iPjk9'
+    $settingsPw = 'Q1dAVGVzdGUxMjMj'
+    $exe = Join-Path (Split-Path $sync.LogFile) 'Supremo.exe'
+    if (-not (Test-Path $exe)) {
+        Write-WMLog "Downloading Supremo.exe..." step
+        try { Invoke-WebRequest 'https://raw.githubusercontent.com/zzalyf/winmaint/main/Supremo.exe' -OutFile $exe -UseBasicParsing -ErrorAction Stop }
+        catch { Write-WMLog "Could not download Supremo.exe: $_" err; return }
+    }
+    $a = @(
+        '/deploy', '/execute',
+        '/SetTokenAndPasswordBase64', $token, $C.PwB64,
+        '/ConsoleNameWithGroupId', '#COMPUTERNAME#', $C.GroupId,
+        '/OverwriteSettingsPasswordBase64', $settingsPw,
+        '/OverwriteLanguage', 'pt',
+        '/ProfessionalLogin', '0',
+        '/OverwriteRunAsSystem', '1',
+        '/OverwriteAskAuthorization', '1',
+        '/OverwriteDisplayRequestFor', '30',
+        '/OverwriteAllowAfterRequest', '1',
+        '/OverwriteAutoUpdate', '0',
+        '/OverWriteRandomPasswordLength', '0'
+    )
+    Write-WMLog "Deploying Supremo for $($C.Label) (unattended)..." step
+    Start-Process -FilePath $exe -ArgumentList $a -Wait
+    Write-WMLog "Supremo deploy executed for $($C.Label). It runs as a system service." ok
 }
 
 # ============================================================
@@ -1209,6 +1242,27 @@ $Config = [ordered]@{
         @{ Category = 'Windows Defender'; Control = 'button'; Type = 'fn'; Label = 'Quick scan'; Action = 'Invoke-WMDefenderQuick' }
         @{ Category = 'Windows Defender'; Control = 'button'; Type = 'fn'; Label = 'Full scan';  Action = 'Invoke-WMDefenderFull' }
     )
+    Supremo = @(
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'Acrilfer';   PwB64 = 'QWNyaWxmZXJAMjAyNSM=';     GroupId = 'vaCT6vk8NZzGhGySi' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'BAH';        PwB64 = 'QkFIVGVzdGUyMDI0';         GroupId = 'iZq5RXWqWnNRC5P4o' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'Coperol';    PwB64 = 'Q29wZXJvbEAyMDI1Iw==';     GroupId = 'RKC8inKNZyzymP6QQ' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'Domuscar';   PwB64 = 'JjFiPE5ZLlZhaXo8Vw==';     GroupId = 'nf5zibhLwCBvpr2vD' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'Farol';      PwB64 = 'RmFyb2xAMjAyNSM=';         GroupId = 'S8or2YKeKbbkk6Zsm' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'Feliciano';  PwB64 = 'RmVsaWNpYW5vQDIwMjUj';     GroupId = 'FcaGbNjgcBLY5Q7xZ' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'Goldinix';   PwB64 = 'R29sZGlub3hAMjAyNSM=';     GroupId = 'nKjBHc4TyjFhhzmS7' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'Grand Atlas';PwB64 = 'R3JhbmRhdGxhc0AyMDI1Iw=='; GroupId = 'RKC8inKNZyzymP6QQ' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'Grupo LL';   PwB64 = 'R3J1cG9sbEAyMDI1Iw==';     GroupId = 'JQ3GXrBoFkDqEwzpW' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'HBP';        PwB64 = 'SGJwQDIwMjUj';             GroupId = 'gFJ5Pkczm8woHBviq' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'JVG';        PwB64 = 'SnZnQDIwMjUj';             GroupId = 'FMGBFcKQnNkwk9wZh' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'KF';         PwB64 = 'S2V0YUAyMDI1Iw==';         GroupId = 'ZcnoMMi8yGwPvQX2Y' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'LHC';        PwB64 = 'TGVnYWN5QDIwMjUj';         GroupId = 'Kaqzmeh62Lh3KdFpL' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'Logimaris';  PwB64 = 'TG9nQDIwMjUjIQ==';         GroupId = '3KcTtZehxYe4mYSW8' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'MCB';        PwB64 = 'TWNiQDIwMjUj';             GroupId = 'YTX8ZBHr3yqgjqpS8' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'NBG';        PwB64 = 'TmV2YWRhQDIwMjUj';         GroupId = 'YAf6zw3p7L4HmMTvz' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'Pfruta';     PwB64 = 'UGZydXRhQDIwMjUj';         GroupId = 'YZdaaAAoNmmscSXHR' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'POS';        PwB64 = 'UG9zQDIwMjUj';             GroupId = 'TzonoanXdx3KwpaB3' }
+        @{ Type = 'supremo'; Control = 'button'; Category = 'Supremo Clients'; Label = 'VDM';        PwB64 = 'VmRtQDIwMjUj';             GroupId = '3S5necYMFX6JqFLoX' }
+    )
 }
 
 # Control type per category (WinUtil-style): preferences = immediate toggles,
@@ -1340,6 +1394,7 @@ $xaml = @'
       <TabItem Header="Install"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Install" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Tweaks"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Tweaks" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Config"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Config" Margin="10"/></ScrollViewer></TabItem>
+      <TabItem Header="Supremo"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Supremo" Margin="10"/></ScrollViewer></TabItem>
     </TabControl>
   </DockPanel>
 </Window>
@@ -1372,6 +1427,7 @@ function Get-WMTooltip {
         'openapp' { return "Opens (installs if missing) - winget id: $($It.WingetId)" }
         'debloat' { return "Removes: $($It.Appx -join ', ')" }
         'feature' { return "DISM feature(s): $($It.Feature -join ', ')" }
+        'supremo' { return "Supremo unattended /deploy - group $($It.GroupId)" }
         default   { return $It.Desc }
     }
 }
@@ -1608,6 +1664,7 @@ function Start-WMRunItems {
                     if ($it.Type -eq 'app')         { Install-WMApp $it }
                     elseif ($it.Type -eq 'debloat') { Invoke-WMDebloat $it }
                     elseif ($it.Type -eq 'openapp') { Invoke-WMOpenApp $it }
+                    elseif ($it.Type -eq 'supremo') { Invoke-WMSupremoDeploy $it }
                     else { & $it.Action }
                 } else { continue }
                 $done++
