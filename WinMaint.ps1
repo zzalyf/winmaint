@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.06.29-r6'   # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.06.29-r7'   # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -984,12 +984,6 @@ function Invoke-WMCreateAdmin {
 #  Default = checked by default. (Phase 1: Diagnostics + Cleanup.)
 # ============================================================
 $Config = [ordered]@{
-    Diagnostics = @(
-        @{ Key = 'sys';   Label = 'System Summary + Inventario CSV'; Action = 'Invoke-WMSystemSummary'; Default = $false }
-        @{ Key = 'boot';  Label = 'Pending Reboot Check';            Action = 'Invoke-WMRebootCheck';   Default = $false }
-        @{ Key = 'start'; Label = 'Startup Items';                   Action = 'Invoke-WMStartupItems';  Default = $false }
-        @{ Key = 'evt';   Label = 'Event Log (7 dias)';              Action = 'Invoke-WMEventLog';      Default = $false }
-    )
     Install = @(
         # Browsers
         @{ Type = 'app'; Category = 'Browsers'; Label = 'Brave';              WingetId = 'Brave.Brave' }
@@ -1191,6 +1185,10 @@ $Config = [ordered]@{
         @{ Type = 'fn'; Category = 'DNS'; Label = 'Automatic (DHCP)';     Action = 'Invoke-WMDnsAuto' }
     )
     StandardMaintenance = @(
+        @{ Category = 'Diagnostics'; Label = 'System Summary + Inventory CSV'; Action = 'Invoke-WMSystemSummary'; Default = $false }
+        @{ Category = 'Diagnostics'; Label = 'Pending Reboot Check';           Action = 'Invoke-WMRebootCheck';   Default = $false }
+        @{ Category = 'Diagnostics'; Label = 'Startup Items';                  Action = 'Invoke-WMStartupItems';  Default = $false }
+        @{ Category = 'Diagnostics'; Label = 'Event Log (critical, 7 days)';   Action = 'Invoke-WMEventLog';      Default = $false }
         @{ Category = 'Updates'; Label = 'Windows Update';                  Action = 'Invoke-WMWindowsUpdate'; Default = $false }
         @{ Category = 'Updates'; Label = 'Microsoft Store (apps)';          Action = 'Invoke-WMStoreUpdate';   Default = $false }
         @{ Category = 'Updates'; Label = 'Microsoft Office (Click-to-Run)'; Action = 'Invoke-WMOfficeUpdate';  Default = $false }
@@ -1338,7 +1336,6 @@ $xaml = @'
 
     <TabControl x:Name="Tabs" Background="#1E1E2E" BorderThickness="0" Margin="8">
       <TabItem Header="Standard Maintenance"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_StandardMaintenance" Margin="10"/></ScrollViewer></TabItem>
-      <TabItem Header="Diagnostics"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Diagnostics" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Install"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Install" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Tweaks"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Tweaks" Margin="10"/></ScrollViewer></TabItem>
       <TabItem Header="Config"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Panel_Config" Margin="10"/></ScrollViewer></TabItem>
