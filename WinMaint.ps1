@@ -12,6 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
+$WMVersion   = '2026.06.29-r2'   # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -1340,6 +1341,7 @@ function Start-WMRunItems {
     # Re-resolve winget each run so a repair/install during this session is picked
     # up without restarting the app.
     $script:Winget = Resolve-WMWinget
+    Write-Host "WinMaint $WMVersion | winget: $(if ($script:Winget) { $script:Winget } else { 'not found' })" -ForegroundColor DarkGray
 
     $sync.Running = $true
     $BtnRun.Content = if ($Mode -eq 'undo') { 'Undoing...' } else { 'Running...' }
@@ -1359,13 +1361,18 @@ function Start-WMRunItems {
         $ProgressPreference = 'SilentlyContinue'
         try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 
-        # Always ensure winget is working before installing apps: if any app is
-        # selected and winget is missing, install it first, then re-resolve.
-        if ($mode -eq 'apply' -and (@($items | Where-Object { $_.Type -eq 'app' }).Count) -and -not $Winget) {
-            Write-WMLog "winget not detected; installing it before app installs..." step
+        # Always ensure winget actually RUNS before installing apps. Checking the
+        # path is not enough: it can resolve to something that exists but fails to
+        # execute ("Access denied"). Test by invoking it; if it fails, (re)install.
+        $wgWorks = $false
+        if ($Winget) { try { & $Winget --version *> $null; $wgWorks = ($LASTEXITCODE -eq 0) } catch { $wgWorks = $false } }
+        if ($mode -eq 'apply' -and (@($items | Where-Object { $_.Type -eq 'app' }).Count) -and -not $wgWorks) {
+            Write-WMLog "winget not working; installing/repairing it before app installs..." step
             Invoke-WMWingetReinstall
             $global:Winget = Resolve-WMWinget
-            if ($Winget) { Write-WMLog "winget ready." ok } else { Write-WMLog "winget still unavailable; app installs may fail." warn }
+            $wgWorks = $false
+            if ($Winget) { try { & $Winget --version *> $null; $wgWorks = ($LASTEXITCODE -eq 0) } catch {} }
+            if ($wgWorks) { Write-WMLog "winget ready." ok } else { Write-WMLog "winget still unavailable; app installs may fail." warn }
         }
 
         $tweaked = $false
