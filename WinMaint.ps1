@@ -630,15 +630,17 @@ function Invoke-WMIntelDSA {
         Invoke-WMWinget @('install', '--id', 'Intel.IntelDriverAndSupportAssistant', '--accept-package-agreements', '--accept-source-agreements', '--silent')
         Write-WMLog "Intel DSA installed." ok
     }
-    $iExe = @(
-        "${env:ProgramFiles}\Intel\Driver and Support Assistant\DSAExt.exe",
-        "${env:ProgramFiles(x86)}\Intel\Driver and Support Assistant\DSAExt.exe",
-        "${env:ProgramFiles}\Intel\SUR\QUEENCREEK\x64\Esrv.exe",
-        "${env:ProgramFiles(x86)}\Intel\SUR\QUEENCREEK\x64\Esrv.exe"
-    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if ($iExe) { Start-Process $iExe; Write-WMLog "Intel DSA launched." ok }
+    $iExe = Get-ChildItem -Path "$env:ProgramFiles\Intel", "${env:ProgramFiles(x86)}\Intel" -Recurse -Filter '*.exe' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^(DSATray|DSAExt|DSA|Esrv)\.exe$' } | Select-Object -First 1
+    if ($iExe) { Start-Process $iExe.FullName; Write-WMLog "Intel DSA launched ($($iExe.Name))." ok }
     elseif (Start-WMShortcut "*Intel*Driver*Support Assistant*") { Write-WMLog "Intel DSA launched." ok }
-    else { Start-Process "https://www.intel.com/content/www/us/en/support/detect.html"; Write-WMLog "Opened Intel DSA scan page in the browser." ok }
+    else {
+        # Intel DSA is agent + browser based; open its scan page via explorer so the
+        # URL resolves in the user's default browser (Start-Process <url> can throw
+        # "no application associated" from an elevated session).
+        try { Start-Process explorer.exe 'https://www.intel.com/content/www/us/en/support/detect.html'; Write-WMLog "Opened Intel DSA scan page in the browser." ok }
+        catch { Write-WMLog "Installed. Open 'Intel Driver & Support Assistant' from the Start Menu." warn }
+    }
 }
 
 # --- Tweaks (data-driven, reversible) -----------------------
