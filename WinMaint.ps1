@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.07.01-r9'   # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.07.01-r10'  # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -1235,10 +1235,10 @@ $Config = [ordered]@{
         @{ Type = 'fn'; Category = 'DNS'; Label = 'Automatic (DHCP)';     Action = 'Invoke-WMDnsAuto' }
     )
     StandardMaintenance = @(
-        @{ Category = 'Diagnostics'; Label = 'System Summary + Inventory CSV'; Action = 'Invoke-WMSystemSummary'; Default = $false }
-        @{ Category = 'Diagnostics'; Label = 'Pending Reboot Check';           Action = 'Invoke-WMRebootCheck';   Default = $false }
-        @{ Category = 'Diagnostics'; Label = 'Startup Items';                  Action = 'Invoke-WMStartupItems';  Default = $false }
-        @{ Category = 'Diagnostics'; Label = 'Event Log (critical, 7 days)';   Action = 'Invoke-WMEventLog';      Default = $false }
+        @{ Category = 'Diagnostics'; Control = 'button'; Type = 'fn'; Label = 'System Summary + Inventory CSV'; Action = 'Invoke-WMSystemSummary' }
+        @{ Category = 'Diagnostics'; Control = 'button'; Type = 'fn'; Label = 'Pending Reboot Check';           Action = 'Invoke-WMRebootCheck' }
+        @{ Category = 'Diagnostics'; Control = 'button'; Type = 'fn'; Label = 'Startup Items';                  Action = 'Invoke-WMStartupItems' }
+        @{ Category = 'Diagnostics'; Control = 'button'; Type = 'fn'; Label = 'Event Log (critical, 7 days)';   Action = 'Invoke-WMEventLog' }
         @{ Category = 'Updates'; Label = 'Windows Update';                  Action = 'Invoke-WMWindowsUpdate'; Default = $false }
         @{ Category = 'Updates'; Label = 'Microsoft Store (apps)';          Action = 'Invoke-WMStoreUpdate';   Default = $false }
         @{ Category = 'Updates'; Label = 'Microsoft Office (Click-to-Run)'; Action = 'Invoke-WMOfficeUpdate';  Default = $false }
@@ -1247,7 +1247,7 @@ $Config = [ordered]@{
         @{ Category = 'Updates'; Label = 'HP Support Assistant';             Action = 'Invoke-WMHPSupport';         Default = $false; OemMatch = 'HP|Hewlett' }
         @{ Category = 'Updates'; Label = 'Dell Command | Update';            Action = 'Invoke-WMDellCommandUpdate'; Default = $false; OemMatch = 'Dell' }
         @{ Category = 'Updates'; Label = 'Intel Driver & Support Assistant'; Action = 'Invoke-WMIntelDSA';          Default = $false }
-        @{ Category = 'Cleanup'; Label = 'Clean temp + Disk Cleanup + Prefetch (C: only)'; Action = 'Invoke-WMCleanup'; Default = $false }
+        @{ Category = 'Cleanup'; Label = 'Clean temp + caches + Prefetch (C: only)'; Action = 'Invoke-WMCleanup'; Default = $false }
         @{ Category = 'Tools'; Control = 'button'; Type = 'openapp'; Label = 'Open CrystalDiskInfo';   WingetId = 'CrystalDewWorld.CrystalDiskInfo'; ExeMatch = '^DiskInfo(64|32)\.exe$' }
         @{ Category = 'Tools'; Control = 'button'; Type = 'openapp'; Label = 'Open HWiNFO64';          WingetId = 'REALiX.HWiNFO';                  ExeMatch = '^HWiNFO(64)?\.exe$' }
         @{ Category = 'Tools'; Control = 'button'; Type = 'openapp'; Label = 'Open CPU-Z';             WingetId = 'CPUID.CPU-Z';                    ExeMatch = '^cpuz(_x64)?\.exe$' }
@@ -1354,7 +1354,7 @@ $xaml = @'
               <ContentPresenter VerticalAlignment="Center" Margin="8,0,0,0"/>
             </StackPanel>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="root" Property="Opacity" Value="0.9"/></Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="track" Property="Background" Value="#585B70"/></Trigger>
               <Trigger Property="IsChecked" Value="True">
                 <Setter TargetName="track" Property="Background" Value="#89B4FA"/>
                 <Setter TargetName="knob" Property="HorizontalAlignment" Value="Right"/>
@@ -1376,12 +1376,15 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
+            <Grid>
+              <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <Border x:Name="ov" CornerRadius="4" Background="White" Opacity="0" IsHitTestVisible="False"/>
+            </Grid>
             <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Opacity" Value="0.85"/></Trigger>
-              <Trigger Property="IsPressed"   Value="True"><Setter TargetName="bd" Property="Opacity" Value="0.70"/></Trigger>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ov" Property="Opacity" Value="0.20"/></Trigger>
+              <Trigger Property="IsPressed"   Value="True"><Setter TargetName="ov" Property="Opacity" Value="0.35"/></Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -1436,23 +1439,67 @@ function Get-WMTweakState {
     } catch { return $false }
 }
 
-# Build an informative tooltip from the item's own data (no hand-written prose).
+# Plain-language, one-line explanations shown at the top of each tooltip so a
+# less-technical user understands what an item does (the technical detail - e.g.
+# the registry value - is still shown underneath).
+$WMDesc = @{
+    # Essential Tweaks
+    'Disable Activity History'                   = 'Stops Windows from recording a timeline of the apps and files you use.'
+    'Disable telemetry'                          = 'Reduces the diagnostic and usage data Windows sends to Microsoft, and turns off the advertising ID.'
+    'Disable consumer features (suggested apps)' = 'Stops Windows from auto-installing suggested/promoted apps and showing ads in the Start menu.'
+    'Disable GameDVR'                            = 'Turns off the Xbox background game recorder (can improve gaming performance).'
+    'Disable location tracking'                  = 'Prevents apps and Windows from accessing your location.'
+    'Disable Storage Sense'                      = 'Stops Windows from automatically deleting temporary files and old content.'
+    'Disable background apps'                    = 'Prevents Store apps from running in the background (saves resources and battery).'
+    'Disable Copilot'                            = 'Removes the Windows Copilot AI assistant from the taskbar.'
+    'Disable Notepad AI features'                = 'Turns off the AI writing features in Notepad.'
+    'Disable Delivery Optimization'              = 'Stops Windows from sharing update files with other PCs over your network/internet.'
+    'Disable Teredo (IPv6 transition)'           = 'Disables the Teredo IPv6 tunnelling protocol (rarely needed; can help some connections).'
+    'Enable long paths (>260 chars)'             = 'Lets programs use file paths longer than 260 characters.'
+    # Preferences
+    'Show file extensions'                       = 'Always shows file types like .exe, .pdf and .txt in File Explorer.'
+    'Show hidden files'                          = 'Makes hidden files and folders visible in File Explorer.'
+    'Dark theme (apps + system)'                 = 'Switches Windows and apps to the dark colour theme.'
+    'Disable Bing/web search in Start menu'      = 'Removes web/Bing results from Start menu search - it searches only your PC.'
+    'Disable taskbar Widgets'                    = 'Removes the Widgets (news/weather) button from the taskbar.'
+    'Disable lock screen tips/ads'               = 'Stops tips, ads and "fun facts" from showing on the lock screen.'
+    'Align taskbar to the left'                  = 'Moves the taskbar icons to the left (Windows 10 style) instead of centred.'
+    'Hide Task View button'                      = 'Removes the Task View button from the taskbar.'
+    'Hide taskbar Search box'                    = 'Removes the search box/icon from the taskbar.'
+    'Show seconds in taskbar clock'              = 'Adds seconds to the taskbar clock.'
+    'System tray battery percentage'             = 'Shows the battery percentage in the system tray.'
+    'End Task on taskbar right-click (Win11)'    = 'Adds an "End task" option when you right-click an app on the taskbar.'
+    'Verbose logon messages'                     = 'Shows detailed status messages while signing in and out (useful for troubleshooting).'
+    'NumLock on startup'                         = 'Turns NumLock on automatically at the sign-in screen.'
+    # Advanced Tweaks
+    'Disable Hibernation'                        = 'Turns off hibernation and deletes hiberfil.sys to free disk space.'
+    'Set system clock to UTC (dual-boot)'        = 'Stores the hardware clock in UTC - helps when dual-booting with Linux.'
+    'Disable Fullscreen Optimizations'           = 'Disables fullscreen optimizations (can reduce input lag in some games).'
+    'Disable Sticky Keys shortcut'               = 'Stops the Sticky Keys prompt when Shift is pressed five times.'
+    'Detailed BSoD information'                  = 'Shows more technical detail on blue-screen (BSoD) crashes.'
+}
+
+# Build an informative tooltip: a plain-language line (when available) on top,
+# then the technical detail derived from the item's own data.
 function Get-WMTooltip {
     param($It)
-    switch ($It.Type) {
+    $base = switch ($It.Type) {
         'tweak' {
             $p = @($It.Reg | ForEach-Object { "$($_.Path)\$($_.Name)  ->  on=$($_.On) / off=$($_.Off)" })
             if ($It.SvcOff) { $p += "Services disabled on apply: $($It.SvcOff -join ', ')" }
-            if ($It.ApplyScript) { $p += "Script: $($It.ApplyScript)" }
-            return ($p -join "`n")
+            if ($It.ApplyScript) { $p += "Command: $($It.ApplyScript)" }
+            ($p -join "`n")
         }
-        'app'     { return "winget id: $($It.WingetId)$(if ($It.Source) { "  (source: $($It.Source))" })" }
-        'openapp' { return "Opens (installs if missing) - winget id: $($It.WingetId)" }
-        'debloat' { return "Removes: $($It.Appx -join ', ')" }
-        'feature' { return "DISM feature(s): $($It.Feature -join ', ')" }
-        'supremo' { return "Supremo unattended /deploy - group $($It.GroupId)" }
-        default   { return $It.Desc }
+        'app'     { "winget id: $($It.WingetId)$(if ($It.Source) { "  (source: $($It.Source))" })" }
+        'openapp' { "Opens (installs if missing) - winget id: $($It.WingetId)" }
+        'debloat' { "Removes: $($It.Appx -join ', ')" }
+        'feature' { "DISM feature(s): $($It.Feature -join ', ')" }
+        'supremo' { "Supremo unattended /deploy - group $($It.GroupId)" }
+        default   { $It.Desc }
     }
+    $d = $WMDesc[$It.Label]
+    if ($d) { return "$d`n`n$base" }
+    return $base
 }
 
 # Populate tabs from config; keep references to all checkboxes.
@@ -1607,7 +1654,7 @@ function Get-WMRecommendedItems {
         'HP Support Assistant'
         'Dell Command | Update'
         'Intel Driver & Support Assistant'
-        'Clean temp + Disk Cleanup + Prefetch (C: only)'
+        'Clean temp + caches + Prefetch (C: only)'
         'Open CrystalDiskInfo'
         'Quick scan'
     )
