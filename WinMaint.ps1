@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.07.01-r14'  # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.07.01-r15'  # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -543,14 +543,26 @@ function Invoke-WMUpdateApp {
 }
 
 # --- Detect installed apps (for the Install tab markers) ----
-# Runs 'winget list' once and stashes the raw text in $sync.InstalledIds; the UI
-# thread then flags each app whose id appears in it.
+# Uses 'winget export' (structured JSON) so package ids are exact - 'winget list'
+# truncates the Id column with an ellipsis and can't be matched reliably. Stashes
+# the ids in $sync.InstalledIds; the UI thread then flags each installed app.
 function Invoke-WMDetectInstalled {
     Write-WMLog "DETECT INSTALLED APPS" head
     if (-not $Winget) { Write-WMLog "winget unavailable; cannot detect installed apps." warn; return }
-    $out = & $Winget list --accept-source-agreements 2>&1 | Out-String
-    $sync.InstalledIds = $out
-    Write-WMLog "Installed-apps scan complete." ok
+    $tmp = Join-Path $env:TEMP ("wm_export_{0}.json" -f ([guid]::NewGuid().ToString('N')))
+    try {
+        & $Winget export -o $tmp --accept-source-agreements 2>&1 | Out-Null
+        if (-not (Test-Path $tmp)) { Write-WMLog "winget export produced no output; cannot detect." warn; return }
+        $json = Get-Content $tmp -Raw -ErrorAction Stop | ConvertFrom-Json
+        $ids = New-Object System.Collections.Generic.List[string]
+        foreach ($src in $json.Sources) {
+            foreach ($pkg in $src.Packages) { if ($pkg.PackageIdentifier) { $ids.Add($pkg.PackageIdentifier) } }
+        }
+        # Wrap each id in newlines so the UI can do an exact whole-id match.
+        $sync.InstalledIds = "`n" + ($ids -join "`n") + "`n"
+        Write-WMLog "Installed-apps scan complete ($($ids.Count) package(s) detected)." ok
+    } catch { Write-WMLog "Detect failed: $_" err }
+    finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
 }
 
 # --- Updates -------------------------------------------------
@@ -1474,11 +1486,9 @@ $xaml = @'
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
           <Button x:Name="BtnImport"      Content="Import"      Background="#45475A" Foreground="#CDD6F4"/>
           <Button x:Name="BtnExport"      Content="Export"      Background="#45475A" Foreground="#CDD6F4"/>
-          <Button x:Name="BtnRecommended" Content="Recommended" Background="#A6E3A1" Foreground="#11111B"/>
           <Button x:Name="BtnAll"         Content="Select all"  Background="#45475A" Foreground="#CDD6F4"/>
           <Button x:Name="BtnNone"        Content="Clear"       Background="#45475A" Foreground="#CDD6F4"/>
-          <Button x:Name="BtnUndo"        Content="Undo tweaks" Background="#45475A" Foreground="#CDD6F4"/>
-          <Button x:Name="BtnRun"         Content="RUN"         Width="110"/>
+          <Button x:Name="BtnRun"         Content="Run"         Width="110"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -1703,7 +1713,15 @@ foreach ($tab in $Config.Keys) {
             $row.Children.Add($script:BtnUninstall) | Out-Null
             $panel.Children.Add($row) | Out-Null
         }
-        # Tweaks tab: preset rows that check a curated set of tweaks (review + RUN).
+        # Standard Maintenance tab: one-click "Recommended" run lives here.
+        if ($tab -eq 'StandardMaintenance') {
+            $row = New-Object System.Windows.Controls.StackPanel
+            $row.Orientation = 'Horizontal'; $row.Margin = '4,0,4,10'
+            $script:BtnRecommended = New-WMBarButton 'Recommended' '#A6E3A1' '#11111B'
+            $row.Children.Add($script:BtnRecommended) | Out-Null
+            $panel.Children.Add($row) | Out-Null
+        }
+        # Tweaks tab: preset rows + Undo (check a curated set of tweaks, review + Run).
         if ($tab -eq 'Tweaks') {
             $row = New-Object System.Windows.Controls.StackPanel
             $row.Orientation = 'Horizontal'; $row.Margin = '4,0,4,10'
@@ -1713,7 +1731,7 @@ foreach ($tab in $Config.Keys) {
             foreach ($pk in $WMTweakPresets.Keys) {
                 $pb = New-WMBarButton $pk
                 $pb.Tag = $pk
-                $pb.ToolTip = "Checks the recommended tweaks for a $pk (review, then press RUN)."
+                $pb.ToolTip = "Checks the recommended tweaks for a $pk (review, then press Run)."
                 $pb.Add_Click({
                     $set = $WMTweakPresets[$this.Tag]
                     foreach ($c in $AllChecks) {
@@ -1722,6 +1740,10 @@ foreach ($tab in $Config.Keys) {
                 })
                 $row.Children.Add($pb) | Out-Null
             }
+            $script:BtnUndo = New-WMBarButton 'Undo tweaks'
+            $script:BtnUndo.Margin = '18,0,6,0'
+            $script:BtnUndo.ToolTip = 'Check the tweaks you want to revert first, then click this to restore them to Windows defaults (acts only on the checked tweaks).'
+            $row.Children.Add($script:BtnUndo) | Out-Null
             $panel.Children.Add($row) | Out-Null
         }
         # Search box (Install / Tweaks / Config): filters any labelled control
@@ -1769,11 +1791,11 @@ foreach ($tab in $Config.Keys) {
 $BtnRun = $window.FindName('BtnRun')
 $BtnAll = $window.FindName('BtnAll')
 $BtnNone = $window.FindName('BtnNone')
-$BtnUndo = $window.FindName('BtnUndo')
 $BtnExport = $window.FindName('BtnExport')
 $BtnImport = $window.FindName('BtnImport')
-$BtnRecommended = $window.FindName('BtnRecommended')
 $StatusText = $window.FindName('StatusText')
+# BtnUndo and BtnRecommended are created in the Tweaks / Standard Maintenance
+# tab header rows below (populate loop) and stored in script scope.
 
 $BtnAll.Add_Click({ foreach ($c in $AllChecks) { $c.IsChecked = $true } })
 $BtnNone.Add_Click({ foreach ($c in $AllChecks) { $c.IsChecked = $false } })
@@ -1874,16 +1896,16 @@ $timer.Add_Tick({
         $script:WMps.Runspace.Dispose(); $script:WMps.Dispose()
         $script:WMps = $null; $script:WMhandle = $null
         $sync.Running = $false
-        $BtnRun.Content = 'RUN'; $BtnRun.IsEnabled = $true; $BtnUndo.IsEnabled = $true
+        $BtnRun.Content = 'Run'; $BtnRun.IsEnabled = $true; if ($BtnUndo) { $BtnUndo.IsEnabled = $true }
         $sync.Status = 'Done.'; $StatusText.Text = 'Done.'
         Write-Host "`r`n==== DONE ====`r`n" -ForegroundColor Green
         # If a "Get Installed" scan just finished, flag installed apps in the UI.
         if ($script:MarkInstalledPending -and $sync.InstalledIds) {
-            $txt = $sync.InstalledIds
+            $txt = $sync.InstalledIds.ToLower()
             foreach ($c in $AllChecks) {
                 $t = $c.Tag
                 if ($t.Type -ne 'app' -or -not $t.WingetId) { continue }
-                if ($txt -match [regex]::Escape($t.WingetId)) {
+                if ($txt.Contains("`n$($t.WingetId.ToLower())`n")) {
                     $c.Foreground = '#A6E3A1'; $c.Content = "$($t.Label)  [installed]"
                 } else {
                     $c.Foreground = '#CDD6F4'; $c.Content = $t.Label
@@ -1934,7 +1956,7 @@ function Start-WMRunItems {
 
     $sync.Running = $true
     $BtnRun.Content = if ($Mode -eq 'undo') { 'Undoing...' } else { 'Running...' }
-    $BtnRun.IsEnabled = $false; $BtnUndo.IsEnabled = $false
+    $BtnRun.IsEnabled = $false; if ($BtnUndo) { $BtnUndo.IsEnabled = $false }
 
     $rs = [runspacefactory]::CreateRunspace($Host, $iss)
     $rs.ApartmentState = 'STA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()

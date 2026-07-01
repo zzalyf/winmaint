@@ -47,15 +47,16 @@ Há três tipos de controlo (estilo WinUtil):
 - **Toggle** (switch) — liga/desliga **imediato**, refletindo o estado atual do sistema.
 - **Botão** — ação de **1 clique** (corre logo).
 
-Barra inferior: **Import**, **Export**, **Recommended** (corre logo a manutenção padrão:
-Windows Update, Store, Office, winget upgrade, ferramenta OEM, Intel DSA, limpeza,
-CrystalDiskInfo, Defender quick scan), **Select all**, **Clear**, **Undo tweaks** e
-**RUN**. As tabs Install/Tweaks/Config têm caixa de pesquisa.
+Barra inferior: **Import**, **Export**, **Select all**, **Clear** e **Run**. As tabs
+Install/Tweaks/Config têm caixa de pesquisa.
 
+- A tab **Standard Maintenance** tem no topo **Recommended** — corre logo a manutenção
+  padrão (Windows Update, Store, Office, winget upgrade, ferramenta OEM, Intel DSA,
+  limpeza, CrystalDiskInfo, Defender quick scan).
 - A tab **Install** tem no topo **Get Installed** (marca as apps já instaladas),
   **Update selected** e **Uninstall selected** (winget upgrade/uninstall só das marcadas).
 - A tab **Tweaks** tem **Presets** (Desktop / Laptop / Minimal) que marcam um conjunto
-  curado de tweaks para reveres e correres com o RUN. Antes de aplicar tweaks/debloat é
+  curado de tweaks, e **Undo tweaks** que os reverte. Antes de aplicar tweaks/debloat é
   criado automaticamente um ponto de restauro do sistema (uma vez por sessão).
 - A tab **Config** tem **Windows Update** (Default / Security-only / Disabled).
 
