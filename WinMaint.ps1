@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.07.01-r10'  # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.07.01-r11'  # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -1242,7 +1242,7 @@ $Config = [ordered]@{
         @{ Category = 'Updates'; Label = 'Windows Update';                  Action = 'Invoke-WMWindowsUpdate'; Default = $false }
         @{ Category = 'Updates'; Label = 'Microsoft Store (apps)';          Action = 'Invoke-WMStoreUpdate';   Default = $false }
         @{ Category = 'Updates'; Label = 'Microsoft Office (Click-to-Run)'; Action = 'Invoke-WMOfficeUpdate';  Default = $false }
-        @{ Category = 'Updates'; Label = 'winget upgrade --all';            Action = 'Invoke-WMWingetUpgradeAll'; Default = $false }
+        @{ Category = 'Updates'; Label = 'Update all apps (winget)';         Action = 'Invoke-WMWingetUpgradeAll'; Default = $false }
         @{ Category = 'Updates'; Label = 'Lenovo Vantage';                   Action = 'Invoke-WMLenovoVantage';     Default = $false; OemMatch = 'Lenovo' }
         @{ Category = 'Updates'; Label = 'HP Support Assistant';             Action = 'Invoke-WMHPSupport';         Default = $false; OemMatch = 'HP|Hewlett' }
         @{ Category = 'Updates'; Label = 'Dell Command | Update';            Action = 'Invoke-WMDellCommandUpdate'; Default = $false; OemMatch = 'Dell' }
@@ -1649,7 +1649,7 @@ function Get-WMRecommendedItems {
         'Windows Update'
         'Microsoft Store (apps)'
         'Microsoft Office (Click-to-Run)'
-        'winget upgrade --all'
+        'Update all apps (winget)'
         'Lenovo Vantage'
         'HP Support Assistant'
         'Dell Command | Update'
