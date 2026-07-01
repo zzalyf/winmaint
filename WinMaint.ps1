@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.07.01-r11'  # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.07.01-r12'  # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -1247,7 +1247,7 @@ $Config = [ordered]@{
         @{ Category = 'Updates'; Label = 'HP Support Assistant';             Action = 'Invoke-WMHPSupport';         Default = $false; OemMatch = 'HP|Hewlett' }
         @{ Category = 'Updates'; Label = 'Dell Command | Update';            Action = 'Invoke-WMDellCommandUpdate'; Default = $false; OemMatch = 'Dell' }
         @{ Category = 'Updates'; Label = 'Intel Driver & Support Assistant'; Action = 'Invoke-WMIntelDSA';          Default = $false }
-        @{ Category = 'Cleanup'; Label = 'Clean temp + caches + Prefetch (C: only)'; Action = 'Invoke-WMCleanup'; Default = $false }
+        @{ Category = 'Cleanup'; Label = 'Clean temp + caches (C:)'; Action = 'Invoke-WMCleanup'; Default = $false }
         @{ Category = 'Tools'; Control = 'button'; Type = 'openapp'; Label = 'Open CrystalDiskInfo';   WingetId = 'CrystalDewWorld.CrystalDiskInfo'; ExeMatch = '^DiskInfo(64|32)\.exe$' }
         @{ Category = 'Tools'; Control = 'button'; Type = 'openapp'; Label = 'Open HWiNFO64';          WingetId = 'REALiX.HWiNFO';                  ExeMatch = '^HWiNFO(64)?\.exe$' }
         @{ Category = 'Tools'; Control = 'button'; Type = 'openapp'; Label = 'Open CPU-Z';             WingetId = 'CPUID.CPU-Z';                    ExeMatch = '^cpuz(_x64)?\.exe$' }
@@ -1471,6 +1471,8 @@ $WMDesc = @{
     'End Task on taskbar right-click (Win11)'    = 'Adds an "End task" option when you right-click an app on the taskbar.'
     'Verbose logon messages'                     = 'Shows detailed status messages while signing in and out (useful for troubleshooting).'
     'NumLock on startup'                         = 'Turns NumLock on automatically at the sign-in screen.'
+    # Standard Maintenance
+    'Clean temp + caches (C:)'                   = 'Deletes temporary files, Windows Update/thumbnail caches and Prefetch, and empties the Recycle Bin - on the C: drive only.'
     # Advanced Tweaks
     'Disable Hibernation'                        = 'Turns off hibernation and deletes hiberfil.sys to free disk space.'
     'Set system clock to UTC (dual-boot)'        = 'Stores the hardware clock in UTC - helps when dual-booting with Linux.'
@@ -1654,7 +1656,7 @@ function Get-WMRecommendedItems {
         'HP Support Assistant'
         'Dell Command | Update'
         'Intel Driver & Support Assistant'
-        'Clean temp + caches + Prefetch (C: only)'
+        'Clean temp + caches (C:)'
         'Open CrystalDiskInfo'
         'Quick scan'
     )
@@ -1669,6 +1671,9 @@ function Get-WMRecommendedItems {
 }
 
 $BtnRecommended.Add_Click({ Start-WMRunItems (Get-WMRecommendedItems) 'apply' $true })
+# Tooltip lists exactly what will run (OEM tool already filtered to this machine).
+$BtnRecommended.ToolTip = "Runs the standard maintenance sequence, in order:`n" +
+    (@(Get-WMRecommendedItems | ForEach-Object { "  - $($_.Label)" }) -join "`n")
 $BtnUninstall.Add_Click({
     $apps = @($AllChecks | Where-Object { $_.IsChecked } | ForEach-Object { $_.Tag } | Where-Object { $_.Type -eq 'app' })
     if (-not $apps.Count) { Write-Host "No apps selected to uninstall." -ForegroundColor Yellow; return }
