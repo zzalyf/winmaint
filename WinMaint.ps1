@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.07.01-r12'  # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.07.01-r13'  # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -1471,8 +1471,30 @@ $WMDesc = @{
     'End Task on taskbar right-click (Win11)'    = 'Adds an "End task" option when you right-click an app on the taskbar.'
     'Verbose logon messages'                     = 'Shows detailed status messages while signing in and out (useful for troubleshooting).'
     'NumLock on startup'                         = 'Turns NumLock on automatically at the sign-in screen.'
-    # Standard Maintenance
+    # Standard Maintenance - Diagnostics
+    'System Summary + Inventory CSV'             = 'Collects hardware and OS details (CPU, RAM, disks, network) and saves an inventory CSV to C:\WinMaint.'
+    'Pending Reboot Check'                       = 'Checks whether Windows is waiting for a restart to finish updates or installs.'
+    'Startup Items'                              = 'Lists the programs set to launch automatically when Windows starts.'
+    'Event Log (critical, 7 days)'               = 'Reports critical Windows errors from the last 7 days and saves them to C:\WinMaint.'
+    # Standard Maintenance - Updates
+    'Windows Update'                             = 'Searches for and installs the latest Windows updates.'
+    'Microsoft Store (apps)'                     = 'Updates the apps installed from the Microsoft Store.'
+    'Microsoft Office (Click-to-Run)'            = 'Runs the Office updater to install the latest Office updates.'
+    'Update all apps (winget)'                   = 'Updates every installed app that winget can manage.'
+    'Lenovo Vantage'                             = 'Installs and opens Lenovo Vantage to update drivers and firmware (Lenovo machines).'
+    'HP Support Assistant'                       = 'Installs and opens HP Support Assistant to update drivers and firmware (HP machines).'
+    'Dell Command | Update'                      = 'Installs and opens Dell Command | Update to update drivers and firmware (Dell machines).'
+    'Intel Driver & Support Assistant'           = 'Installs and opens Intel DSA to check for Intel driver updates.'
+    # Standard Maintenance - Cleanup / Tools / Defender
     'Clean temp + caches (C:)'                   = 'Deletes temporary files, Windows Update/thumbnail caches and Prefetch, and empties the Recycle Bin - on the C: drive only.'
+    'Open CrystalDiskInfo'                       = 'Opens CrystalDiskInfo to check the health and temperature of your drives.'
+    'Open HWiNFO64'                              = 'Opens HWiNFO64 for detailed hardware information and sensor readings.'
+    'Open CPU-Z'                                 = 'Opens CPU-Z to view CPU, motherboard and memory details.'
+    'Open GPU-Z'                                 = 'Opens GPU-Z to view graphics card details and sensors.'
+    'Open Angry IP Scanner'                      = 'Opens Angry IP Scanner to scan the local network for devices.'
+    'Open reports folder'                        = 'Opens the C:\WinMaint folder where logs, inventory and reports are saved.'
+    'Quick scan'                                 = 'Runs a Windows Defender quick scan of the most common threat locations.'
+    'Full scan'                                  = 'Runs a Windows Defender full scan of the whole system (can take a long time).'
     # Advanced Tweaks
     'Disable Hibernation'                        = 'Turns off hibernation and deletes hiberfil.sys to free disk space.'
     'Set system clock to UTC (dual-boot)'        = 'Stores the hardware clock in UTC - helps when dual-booting with Linux.'
