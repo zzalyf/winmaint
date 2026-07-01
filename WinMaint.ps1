@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.07.01-r13'  # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.07.01-r14'  # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -135,6 +135,8 @@ $sync.Running    = $false
 $sync.Status     = 'Ready'
 $sync.LogFile    = $LogFile
 $sync.Inventory  = $InventoryFile
+$sync.InstalledIds = $null   # raw 'winget list' text, filled by Get Installed
+$sync.RestoreDone  = $false  # a restore point was created this session (pre-tweak)
 
 # --- winget resolver (works in elevated session) ------------
 function Resolve-WMWinget {
@@ -526,6 +528,31 @@ function Invoke-WMUninstallApp {
     else { Write-WMLog "${Name}: winget returned exit code $code (may have failed)." warn }
 }
 
+# --- Update selected app (winget upgrade by id) -------------
+function Invoke-WMUpdateApp {
+    param($App)
+    $Id = $App.WingetId; $Name = $App.Label
+    if (-not $Winget) { Write-WMLog "winget unavailable; cannot update $Name." warn; return }
+    Write-WMLog "Updating: $Name ($Id)" step
+    $upArgs = @('upgrade', '--id', $Id, '--accept-package-agreements', '--accept-source-agreements', '--silent', '--include-unknown')
+    if ($App.Source) { $upArgs += @('--source', $App.Source) }
+    Invoke-WMWinget $upArgs
+    $code = $LASTEXITCODE
+    if ($null -eq $code -or $code -eq 0) { Write-WMLog "${Name}: up to date / updated." ok }
+    else { Write-WMLog "${Name}: winget returned exit code $code." warn }
+}
+
+# --- Detect installed apps (for the Install tab markers) ----
+# Runs 'winget list' once and stashes the raw text in $sync.InstalledIds; the UI
+# thread then flags each app whose id appears in it.
+function Invoke-WMDetectInstalled {
+    Write-WMLog "DETECT INSTALLED APPS" head
+    if (-not $Winget) { Write-WMLog "winget unavailable; cannot detect installed apps." warn; return }
+    $out = & $Winget list --accept-source-agreements 2>&1 | Out-String
+    $sync.InstalledIds = $out
+    Write-WMLog "Installed-apps scan complete." ok
+}
+
 # --- Updates -------------------------------------------------
 function Invoke-WMWindowsUpdate {
     Write-WMLog "WINDOWS UPDATE" head
@@ -781,6 +808,44 @@ function Invoke-WMWUReset {
         'wuauserv', 'cryptSvc', 'bits', 'msiserver' | ForEach-Object { Start-Service -Name $_ -ErrorAction SilentlyContinue }
         Write-WMLog "Windows Update components reset." ok
     } catch { Write-WMLog "Windows Update reset failed: $_" err }
+}
+
+# --- Windows Update policy (Default / Security-only / Disabled) ---
+function Invoke-WMWUDefault {
+    Write-WMLog "WINDOWS UPDATE POLICY: DEFAULT" head
+    Remove-Item 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -Recurse -Force -ErrorAction SilentlyContinue
+    foreach ($n in 'BranchReadinessLevel', 'DeferFeatureUpdatesPeriodInDays', 'DeferQualityUpdatesPeriodInDays') {
+        Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings' -Name $n -ErrorAction SilentlyContinue
+    }
+    foreach ($s in 'wuauserv', 'bits', 'dosvc') {
+        Set-Service -Name $s -StartupType Manual -ErrorAction SilentlyContinue
+        Start-Service -Name $s -ErrorAction SilentlyContinue
+    }
+    Write-WMLog "Windows Update restored to default (automatic)." ok
+}
+function Invoke-WMWUSecurity {
+    Write-WMLog "WINDOWS UPDATE POLICY: SECURITY-ONLY (defer feature updates)" head
+    $p = 'HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings'
+    if (-not (Test-Path $p)) { New-Item $p -Force | Out-Null }
+    Set-ItemProperty $p -Name 'BranchReadinessLevel'            -Value 20  -Type DWord -Force
+    Set-ItemProperty $p -Name 'DeferFeatureUpdatesPeriodInDays' -Value 365 -Type DWord -Force
+    Set-ItemProperty $p -Name 'DeferQualityUpdatesPeriodInDays' -Value 4   -Type DWord -Force
+    foreach ($s in 'wuauserv', 'bits', 'dosvc') {
+        Set-Service -Name $s -StartupType Manual -ErrorAction SilentlyContinue
+        Start-Service -Name $s -ErrorAction SilentlyContinue
+    }
+    Write-WMLog "Feature updates deferred; security/quality updates still install." ok
+}
+function Invoke-WMWUDisable {
+    Write-WMLog "WINDOWS UPDATE POLICY: DISABLED" head
+    $au = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    if (-not (Test-Path $au)) { New-Item $au -Force | Out-Null }
+    Set-ItemProperty $au -Name 'NoAutoUpdate' -Value 1 -Type DWord -Force
+    foreach ($s in 'wuauserv', 'bits', 'dosvc', 'UsoSvc') {
+        Stop-Service -Name $s -Force -ErrorAction SilentlyContinue
+        Set-Service -Name $s -StartupType Disabled -ErrorAction SilentlyContinue
+    }
+    Write-WMLog "Windows Update disabled. The machine will NOT receive security updates." warn
 }
 
 function Invoke-WMWingetReinstall {
@@ -1224,6 +1289,10 @@ $Config = [ordered]@{
         @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Computer Management';  Action = 'Invoke-WMComputerMgmt' }
         @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Services';             Action = 'Invoke-WMServicesPanel' }
         @{ Type = 'fn'; Category = 'Legacy Panels'; Label = 'Devices and Printers'; Action = 'Invoke-WMPrintersPanel' }
+        # Windows Update policy
+        @{ Type = 'fn'; Control = 'button'; Category = 'Windows Update'; Label = 'Updates: Default (automatic)'; Action = 'Invoke-WMWUDefault' }
+        @{ Type = 'fn'; Control = 'button'; Category = 'Windows Update'; Label = 'Updates: Security-only';       Action = 'Invoke-WMWUSecurity' }
+        @{ Type = 'fn'; Control = 'button'; Category = 'Windows Update'; Label = 'Updates: Disabled';            Action = 'Invoke-WMWUDisable' }
         # Remote Access
         @{ Type = 'fn'; Category = 'Remote Access'; Label = 'OpenSSH Server - Enable'; Action = 'Invoke-WMEnableOpenSSH' }
         # Local accounts
@@ -1409,7 +1478,6 @@ $xaml = @'
           <Button x:Name="BtnAll"         Content="Select all"  Background="#45475A" Foreground="#CDD6F4"/>
           <Button x:Name="BtnNone"        Content="Clear"       Background="#45475A" Foreground="#CDD6F4"/>
           <Button x:Name="BtnUndo"        Content="Undo tweaks" Background="#45475A" Foreground="#CDD6F4"/>
-          <Button x:Name="BtnUninstall"   Content="Uninstall"   Background="#F38BA8" Foreground="#11111B"/>
           <Button x:Name="BtnRun"         Content="RUN"         Width="110"/>
         </StackPanel>
       </Grid>
@@ -1495,6 +1563,10 @@ $WMDesc = @{
     'Open reports folder'                        = 'Opens the C:\WinMaint folder where logs, inventory and reports are saved.'
     'Quick scan'                                 = 'Runs a Windows Defender quick scan of the most common threat locations.'
     'Full scan'                                  = 'Runs a Windows Defender full scan of the whole system (can take a long time).'
+    # Config - Windows Update policy
+    'Updates: Default (automatic)'               = 'Restores normal automatic Windows Update behaviour (removes any deferral/disable policy).'
+    'Updates: Security-only'                     = 'Keeps installing security and quality updates but defers feature (version) upgrades.'
+    'Updates: Disabled'                          = 'Turns Windows Update off completely - the PC will NOT receive security updates. Use with care.'
     # Advanced Tweaks
     'Disable Hibernation'                        = 'Turns off hibernation and deletes hiberfil.sys to free disk space.'
     'Set system clock to UTC (dual-boot)'        = 'Stores the hardware clock in UTC - helps when dual-booting with Linux.'
@@ -1524,6 +1596,35 @@ function Get-WMTooltip {
     $d = $WMDesc[$It.Label]
     if ($d) { return "$d`n`n$base" }
     return $base
+}
+
+# Curated tweak presets (check a set of tweak checkboxes; the tech reviews + RUN).
+$WMTweakPresets = [ordered]@{
+    Desktop = @(
+        'Disable Activity History', 'Disable telemetry', 'Disable consumer features (suggested apps)',
+        'Disable GameDVR', 'Disable background apps', 'Disable Copilot', 'Disable Delivery Optimization',
+        'Show file extensions', 'Show hidden files', 'Dark theme (apps + system)',
+        'Disable Bing/web search in Start menu', 'Disable taskbar Widgets', 'Disable lock screen tips/ads'
+    )
+    Laptop = @(
+        'Disable Activity History', 'Disable telemetry', 'Disable consumer features (suggested apps)',
+        'Disable GameDVR', 'Disable background apps', 'Disable Copilot', 'Disable Delivery Optimization',
+        'Show file extensions', 'Show hidden files', 'Dark theme (apps + system)',
+        'Disable Bing/web search in Start menu', 'Disable taskbar Widgets', 'Disable lock screen tips/ads',
+        'System tray battery percentage'
+    )
+    Minimal = @(
+        'Disable telemetry', 'Disable consumer features (suggested apps)',
+        'Show file extensions', 'Disable Bing/web search in Start menu'
+    )
+}
+
+# Small styled action button used in tab header rows (grey, WinUtil-style).
+function New-WMBarButton {
+    param([string]$Text, [string]$Bg = '#45475A', [string]$Fg = '#CDD6F4')
+    $b = New-Object System.Windows.Controls.Button
+    $b.Content = $Text; $b.Background = $Bg; $b.Foreground = $Fg; $b.Margin = '0,0,6,0'
+    return $b
 }
 
 # Populate tabs from config; keep references to all checkboxes.
@@ -1587,6 +1688,42 @@ foreach ($tab in $Config.Keys) {
             }
             $wrap.Children.Add($col) | Out-Null
         }
+        # Install tab: app-management action row (detect / update / uninstall).
+        if ($tab -eq 'Install') {
+            $row = New-Object System.Windows.Controls.StackPanel
+            $row.Orientation = 'Horizontal'; $row.Margin = '4,0,4,10'
+            $script:BtnGetInstalled = New-WMBarButton 'Get Installed'
+            $script:BtnGetInstalled.ToolTip = 'Scans the machine and marks the apps already installed.'
+            $script:BtnUpdateApps = New-WMBarButton 'Update selected'
+            $script:BtnUpdateApps.ToolTip = 'Updates the checked apps via winget upgrade.'
+            $script:BtnUninstall = New-WMBarButton 'Uninstall selected' '#F38BA8' '#11111B'
+            $script:BtnUninstall.ToolTip = 'Uninstalls the checked apps via winget (asks for confirmation).'
+            $row.Children.Add($script:BtnGetInstalled) | Out-Null
+            $row.Children.Add($script:BtnUpdateApps) | Out-Null
+            $row.Children.Add($script:BtnUninstall) | Out-Null
+            $panel.Children.Add($row) | Out-Null
+        }
+        # Tweaks tab: preset rows that check a curated set of tweaks (review + RUN).
+        if ($tab -eq 'Tweaks') {
+            $row = New-Object System.Windows.Controls.StackPanel
+            $row.Orientation = 'Horizontal'; $row.Margin = '4,0,4,10'
+            $lbl = New-Object System.Windows.Controls.TextBlock
+            $lbl.Text = 'Presets:'; $lbl.Foreground = '#A6ADC8'; $lbl.VerticalAlignment = 'Center'; $lbl.Margin = '0,0,8,0'
+            $row.Children.Add($lbl) | Out-Null
+            foreach ($pk in $WMTweakPresets.Keys) {
+                $pb = New-WMBarButton $pk
+                $pb.Tag = $pk
+                $pb.ToolTip = "Checks the recommended tweaks for a $pk (review, then press RUN)."
+                $pb.Add_Click({
+                    $set = $WMTweakPresets[$this.Tag]
+                    foreach ($c in $AllChecks) {
+                        if ($c.Tag.Type -eq 'tweak') { $c.IsChecked = ($set -contains $c.Tag.Label) }
+                    }
+                })
+                $row.Children.Add($pb) | Out-Null
+            }
+            $panel.Children.Add($row) | Out-Null
+        }
         # Search box (Install / Tweaks / Config): filters any labelled control
         # (checkbox, toggle, button) and hides category columns with no matches.
         if ($tab -in 'Install', 'Tweaks', 'Config') {
@@ -1636,7 +1773,6 @@ $BtnUndo = $window.FindName('BtnUndo')
 $BtnExport = $window.FindName('BtnExport')
 $BtnImport = $window.FindName('BtnImport')
 $BtnRecommended = $window.FindName('BtnRecommended')
-$BtnUninstall = $window.FindName('BtnUninstall')
 $StatusText = $window.FindName('StatusText')
 
 $BtnAll.Add_Click({ foreach ($c in $AllChecks) { $c.IsChecked = $true } })
@@ -1696,8 +1832,23 @@ $BtnRecommended.Add_Click({ Start-WMRunItems (Get-WMRecommendedItems) 'apply' $t
 # Tooltip lists exactly what will run (OEM tool already filtered to this machine).
 $BtnRecommended.ToolTip = "Runs the standard maintenance sequence, in order:`n" +
     (@(Get-WMRecommendedItems | ForEach-Object { "  - $($_.Label)" }) -join "`n")
+
+# Install-tab app actions (checked app checkboxes only).
+$script:MarkInstalledPending = $false
+function Get-WMCheckedApps {
+    @($AllChecks | Where-Object { $_.IsChecked } | ForEach-Object { $_.Tag } | Where-Object { $_.Type -eq 'app' })
+}
+$BtnGetInstalled.Add_Click({
+    $script:MarkInstalledPending = $true
+    Start-WMRunItems @(@{ Type = 'detect'; Label = 'Detect installed apps' }) 'apply' $false
+})
+$BtnUpdateApps.Add_Click({
+    $apps = Get-WMCheckedApps
+    if (-not $apps.Count) { Write-Host "No apps selected to update." -ForegroundColor Yellow; return }
+    Start-WMRunItems $apps 'update' $false
+})
 $BtnUninstall.Add_Click({
-    $apps = @($AllChecks | Where-Object { $_.IsChecked } | ForEach-Object { $_.Tag } | Where-Object { $_.Type -eq 'app' })
+    $apps = Get-WMCheckedApps
     if (-not $apps.Count) { Write-Host "No apps selected to uninstall." -ForegroundColor Yellow; return }
     Start-WMRunItems $apps 'uninstall' $false
 })
@@ -1726,6 +1877,20 @@ $timer.Add_Tick({
         $BtnRun.Content = 'RUN'; $BtnRun.IsEnabled = $true; $BtnUndo.IsEnabled = $true
         $sync.Status = 'Done.'; $StatusText.Text = 'Done.'
         Write-Host "`r`n==== DONE ====`r`n" -ForegroundColor Green
+        # If a "Get Installed" scan just finished, flag installed apps in the UI.
+        if ($script:MarkInstalledPending -and $sync.InstalledIds) {
+            $txt = $sync.InstalledIds
+            foreach ($c in $AllChecks) {
+                $t = $c.Tag
+                if ($t.Type -ne 'app' -or -not $t.WingetId) { continue }
+                if ($txt -match [regex]::Escape($t.WingetId)) {
+                    $c.Foreground = '#A6E3A1'; $c.Content = "$($t.Label)  [installed]"
+                } else {
+                    $c.Foreground = '#CDD6F4'; $c.Content = $t.Label
+                }
+            }
+            $script:MarkInstalledPending = $false
+        }
     }
 })
 $timer.Start()
@@ -1755,6 +1920,10 @@ function Start-WMRunItems {
             $pw = [Microsoft.VisualBasic.Interaction]::InputBox("Password for the local admin 'itadmin':", "Create local admin", "itadmin")
             if (-not $pw) { return }
             $sync.AdminPw = $pw
+        }
+        if ($Items | Where-Object { $_.Action -eq 'Invoke-WMWUDisable' }) {
+            $r = [System.Windows.MessageBox]::Show("Disable Windows Update completely? The PC will stop receiving security updates.", "Confirm - disable Windows Update", 'YesNo', 'Warning')
+            if ($r -ne 'Yes') { return }
         }
     }
 
@@ -1795,10 +1964,20 @@ function Start-WMRunItems {
             if ($wgWorks) { Write-WMLog "winget ready." ok } else { Write-WMLog "winget still unavailable; app installs may fail." warn }
         }
 
+        # Safety net: create one System Restore Point before the first tweak /
+        # debloat / feature change of the session (like WinUtil does).
+        if ($mode -eq 'apply' -and -not $sync.RestoreDone -and
+            (@($items | Where-Object { $_.Type -in 'tweak', 'debloat', 'feature' }).Count)) {
+            Invoke-WMRestorePoint
+            $sync.RestoreDone = $true
+        }
+
         $tweaked = $false; $done = 0; $failed = 0
         foreach ($it in $items) {
             try {
                 if ($mode -eq 'uninstall')       { if ($it.Type -eq 'app') { Invoke-WMUninstallApp $it } }
+                elseif ($mode -eq 'update')      { if ($it.Type -eq 'app') { Invoke-WMUpdateApp $it } }
+                elseif ($it.Type -eq 'detect')   { Invoke-WMDetectInstalled }
                 elseif ($it.Type -eq 'tweak')    { $tweaked = $true; Invoke-WMTweak $it $mode }
                 elseif ($it.Type -eq 'feature')  { Invoke-WMFeature $it $mode }
                 elseif ($mode -eq 'apply') {

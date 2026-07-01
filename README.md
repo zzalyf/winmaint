@@ -49,10 +49,18 @@ Há três tipos de controlo (estilo WinUtil):
 
 Barra inferior: **Import**, **Export**, **Recommended** (corre logo a manutenção padrão:
 Windows Update, Store, Office, winget upgrade, ferramenta OEM, Intel DSA, limpeza,
-CrystalDiskInfo, Defender quick scan), **Select all**, **Clear**, **Undo tweaks**,
-**Uninstall** (remove via winget as apps marcadas na Install) e **RUN**. As tabs
-Install/Tweaks/Config têm caixa de pesquisa. Todo o output aparece na **consola do
-PowerShell** (em inglês, tema Catppuccin) e é gravado em `C:\WinMaint\WinMaint.log`.
+CrystalDiskInfo, Defender quick scan), **Select all**, **Clear**, **Undo tweaks** e
+**RUN**. As tabs Install/Tweaks/Config têm caixa de pesquisa.
+
+- A tab **Install** tem no topo **Get Installed** (marca as apps já instaladas),
+  **Update selected** e **Uninstall selected** (winget upgrade/uninstall só das marcadas).
+- A tab **Tweaks** tem **Presets** (Desktop / Laptop / Minimal) que marcam um conjunto
+  curado de tweaks para reveres e correres com o RUN. Antes de aplicar tweaks/debloat é
+  criado automaticamente um ponto de restauro do sistema (uma vez por sessão).
+- A tab **Config** tem **Windows Update** (Default / Security-only / Disabled).
+
+Todo o output aparece na **consola do PowerShell** (em inglês, tema Catppuccin) e é
+gravado em `C:\WinMaint\WinMaint.log`.
 
 ### Tabs
 
