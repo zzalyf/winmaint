@@ -47,9 +47,12 @@ Há três tipos de controlo (estilo WinUtil):
 - **Toggle** (switch) — liga/desliga **imediato**, refletindo o estado atual do sistema.
 - **Botão** — ação de **1 clique** (corre logo).
 
-Barra inferior: **Selecionar tudo**, **Limpar**, **Undo tweaks**, **RUN**. Todo o output
-aparece na **consola do PowerShell** (em inglês, tema Catppuccin) e é gravado em
-`C:\WinMaint\WinMaint.log`.
+Barra inferior: **Import**, **Export**, **Recommended** (corre logo a manutenção padrão:
+Windows Update, Store, Office, winget upgrade, ferramenta OEM, Intel DSA, limpeza,
+CrystalDiskInfo, Defender quick scan), **Select all**, **Clear**, **Undo tweaks**,
+**Uninstall** (remove via winget as apps marcadas na Install) e **RUN**. As tabs
+Install/Tweaks/Config têm caixa de pesquisa. Todo o output aparece na **consola do
+PowerShell** (em inglês, tema Catppuccin) e é gravado em `C:\WinMaint\WinMaint.log`.
 
 ### Tabs
 

@@ -12,7 +12,7 @@ param(
 # via `irm <url> | iex` (no local file path is available in that mode).
 # Replace <user>/<repo> with your GitHub once published.
 $WinMaintUrl = 'https://raw.githubusercontent.com/zzalyf/winmaint/main/WinMaint.ps1'
-$WMVersion   = '2026.06.29-r8'   # bumped on each release; shown at each run for sanity
+$WMVersion   = '2026.07.01-r9'   # bumped on each release; shown at each run for sanity
 
 # --- Admin guard / self-relaunch ----------------------------
 function Test-Admin {
@@ -507,6 +507,22 @@ function Install-WMApp {
     Invoke-WMWinget $instArgs
     $code = $LASTEXITCODE
     if ($null -eq $code -or $code -eq 0) { Write-WMLog "${Name}: installed." ok }
+    else { Write-WMLog "${Name}: winget returned exit code $code (may have failed)." warn }
+}
+
+# --- Uninstall (winget) -------------------------------------
+function Invoke-WMUninstallApp {
+    param($App)
+    $Id = $App.WingetId; $Name = $App.Label
+    if (-not $Winget) { Write-WMLog "winget unavailable; cannot uninstall $Name." warn; return }
+    Write-WMLog "Checking/uninstalling: $Name ($Id)" step
+    $listArgs = @('list', '--id', $Id, '--accept-source-agreements')
+    if ($App.Source) { $listArgs += @('--source', $App.Source) }
+    $listed = & $Winget @listArgs 2>&1 | Out-String
+    if ($listed -notmatch [regex]::Escape($Id)) { Write-WMLog "$Name is not installed." ok; return }
+    Invoke-WMWinget @('uninstall', '--id', $Id, '--accept-source-agreements', '--silent')
+    $code = $LASTEXITCODE
+    if ($null -eq $code -or $code -eq 0) { Write-WMLog "${Name}: uninstalled." ok }
     else { Write-WMLog "${Name}: winget returned exit code $code (may have failed)." warn }
 }
 
@@ -1331,13 +1347,14 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ToggleButton">
-            <StackPanel Orientation="Horizontal" Background="Transparent">
+            <StackPanel x:Name="root" Orientation="Horizontal" Background="Transparent">
               <Border x:Name="track" Width="38" Height="20" CornerRadius="10" Background="#45475A" VerticalAlignment="Center">
                 <Border x:Name="knob" Width="14" Height="14" CornerRadius="7" Background="#CDD6F4" HorizontalAlignment="Left" Margin="3,0,0,0"/>
               </Border>
               <ContentPresenter VerticalAlignment="Center" Margin="8,0,0,0"/>
             </StackPanel>
             <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="root" Property="Opacity" Value="0.9"/></Trigger>
               <Trigger Property="IsChecked" Value="True">
                 <Setter TargetName="track" Property="Background" Value="#89B4FA"/>
                 <Setter TargetName="knob" Property="HorizontalAlignment" Value="Right"/>
@@ -1359,9 +1376,13 @@ $xaml = @'
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
+            <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="4" Padding="{TemplateBinding Padding}">
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="bd" Property="Opacity" Value="0.85"/></Trigger>
+              <Trigger Property="IsPressed"   Value="True"><Setter TargetName="bd" Property="Opacity" Value="0.70"/></Trigger>
+            </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
       </Setter>
@@ -1379,12 +1400,14 @@ $xaml = @'
       <Grid Margin="10,8">
         <TextBlock x:Name="StatusText" Text="Ready" Foreground="#A6ADC8" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Left" TextTrimming="CharacterEllipsis" MaxWidth="520"/>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-          <Button x:Name="BtnImport" Content="Import" Background="#45475A" Foreground="#CDD6F4"/>
-          <Button x:Name="BtnExport" Content="Export" Background="#45475A" Foreground="#CDD6F4"/>
-          <Button x:Name="BtnAll"   Content="Selecionar tudo" Background="#45475A" Foreground="#CDD6F4"/>
-          <Button x:Name="BtnNone"  Content="Limpar"          Background="#45475A" Foreground="#CDD6F4"/>
-          <Button x:Name="BtnUndo"  Content="Undo tweaks"     Background="#45475A" Foreground="#CDD6F4"/>
-          <Button x:Name="BtnRun"   Content="RUN"             Width="110"/>
+          <Button x:Name="BtnImport"      Content="Import"      Background="#45475A" Foreground="#CDD6F4"/>
+          <Button x:Name="BtnExport"      Content="Export"      Background="#45475A" Foreground="#CDD6F4"/>
+          <Button x:Name="BtnRecommended" Content="Recommended" Background="#A6E3A1" Foreground="#11111B"/>
+          <Button x:Name="BtnAll"         Content="Select all"  Background="#45475A" Foreground="#CDD6F4"/>
+          <Button x:Name="BtnNone"        Content="Clear"       Background="#45475A" Foreground="#CDD6F4"/>
+          <Button x:Name="BtnUndo"        Content="Undo tweaks" Background="#45475A" Foreground="#CDD6F4"/>
+          <Button x:Name="BtnUninstall"   Content="Uninstall"   Background="#F38BA8" Foreground="#11111B"/>
+          <Button x:Name="BtnRun"         Content="RUN"         Width="110"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -1493,20 +1516,22 @@ foreach ($tab in $Config.Keys) {
             }
             $wrap.Children.Add($col) | Out-Null
         }
-        # Search box for the Install tab (filters checkboxes by label).
-        if ($tab -eq 'Install') {
+        # Search box (Install / Tweaks / Config): filters any labelled control
+        # (checkbox, toggle, button) and hides category columns with no matches.
+        if ($tab -in 'Install', 'Tweaks', 'Config') {
             $search = New-Object System.Windows.Controls.TextBox
             $search.Margin = '4,0,4,10'; $search.Padding = '6,4'; $search.FontSize = 13
             $search.Background = '#313244'; $search.Foreground = '#CDD6F4'; $search.BorderThickness = 0
             $search.Tag = $wrap
-            $search.Add_GotFocus({ if ($this.Text -eq 'Search apps...') { $this.Text = '' } })
+            $search.Add_GotFocus({ if ($this.Text -eq 'Search...') { $this.Text = '' } })
             $search.Add_TextChanged({
                 $q = $this.Text.Trim()
-                if ($q -eq 'Search apps...') { $q = '' }
+                if ($q -eq 'Search...') { $q = '' }
                 foreach ($c in $this.Tag.Children) {
                     $any = $false
                     foreach ($ch in $c.Children) {
-                        if ($ch -is [System.Windows.Controls.CheckBox]) {
+                        $props = $ch.GetType().GetProperty('Content')
+                        if ($props) {
                             $vis = ($q -eq '' -or "$($ch.Content)" -like "*$q*")
                             $ch.Visibility = if ($vis) { 'Visible' } else { 'Collapsed' }
                             if ($vis) { $any = $true }
@@ -1515,7 +1540,7 @@ foreach ($tab in $Config.Keys) {
                     $c.Visibility = if ($any) { 'Visible' } else { 'Collapsed' }
                 }
             })
-            $search.Text = 'Search apps...'
+            $search.Text = 'Search...'
             $panel.Children.Add($search) | Out-Null
         }
         $panel.Children.Add($wrap) | Out-Null
@@ -1539,6 +1564,8 @@ $BtnNone = $window.FindName('BtnNone')
 $BtnUndo = $window.FindName('BtnUndo')
 $BtnExport = $window.FindName('BtnExport')
 $BtnImport = $window.FindName('BtnImport')
+$BtnRecommended = $window.FindName('BtnRecommended')
+$BtnUninstall = $window.FindName('BtnUninstall')
 $StatusText = $window.FindName('StatusText')
 
 $BtnAll.Add_Click({ foreach ($c in $AllChecks) { $c.IsChecked = $true } })
@@ -1565,6 +1592,40 @@ $BtnImport.Add_Click({
             Write-Host "Profile loaded: $($dlg.FileName)." -ForegroundColor Green
         } catch { Write-Host "Could not load profile: $_" -ForegroundColor Red }
     }
+})
+
+# Curated "Recommended" maintenance run: the usual per-machine job, in order.
+# Returns the exact StandardMaintenance config objects, honouring the OEM filter
+# (only the OEM tool matching this machine's manufacturer survives).
+function Get-WMRecommendedItems {
+    $wanted = @(
+        'Windows Update'
+        'Microsoft Store (apps)'
+        'Microsoft Office (Click-to-Run)'
+        'winget upgrade --all'
+        'Lenovo Vantage'
+        'HP Support Assistant'
+        'Dell Command | Update'
+        'Intel Driver & Support Assistant'
+        'Clean temp + Disk Cleanup + Prefetch (C: only)'
+        'Open CrystalDiskInfo'
+        'Quick scan'
+    )
+    $result = New-Object System.Collections.ArrayList
+    foreach ($label in $wanted) {
+        $item = $Config.StandardMaintenance | Where-Object { $_.Label -eq $label } | Select-Object -First 1
+        if (-not $item) { continue }
+        if ($item.OemMatch -and $WMManufacturer -notmatch $item.OemMatch) { continue }
+        [void]$result.Add($item)
+    }
+    return $result.ToArray()
+}
+
+$BtnRecommended.Add_Click({ Start-WMRunItems (Get-WMRecommendedItems) 'apply' $true })
+$BtnUninstall.Add_Click({
+    $apps = @($AllChecks | Where-Object { $_.IsChecked } | ForEach-Object { $_.Tag } | Where-Object { $_.Type -eq 'app' })
+    if (-not $apps.Count) { Write-Host "No apps selected to uninstall." -ForegroundColor Yellow; return }
+    Start-WMRunItems $apps 'uninstall' $false
 })
 
 # Build the initial-session-state for the worker runspace: inject all engine functions.
@@ -1604,6 +1665,11 @@ function Start-WMRunItems {
     if (-not $Items -or $Items.Count -eq 0) { Write-Host "Nothing selected." -ForegroundColor Yellow; return }
 
     # --- Confirmations for sensitive items (UI thread, before launching) -------
+    if ($Mode -eq 'uninstall') {
+        $apps = @($Items | Where-Object { $_.Type -eq 'app' })
+        $r = [System.Windows.MessageBox]::Show("Uninstall $($apps.Count) app(s) via winget?", "Confirm Uninstall", 'YesNo', 'Warning')
+        if ($r -ne 'Yes') { return }
+    }
     if ($Mode -eq 'apply') {
         $deb = @($Items | Where-Object { $_.Type -eq 'debloat' })
         if ($deb.Count) {
@@ -1658,7 +1724,8 @@ function Start-WMRunItems {
         $tweaked = $false; $done = 0; $failed = 0
         foreach ($it in $items) {
             try {
-                if ($it.Type -eq 'tweak')        { $tweaked = $true; Invoke-WMTweak $it $mode }
+                if ($mode -eq 'uninstall')       { if ($it.Type -eq 'app') { Invoke-WMUninstallApp $it } }
+                elseif ($it.Type -eq 'tweak')    { $tweaked = $true; Invoke-WMTweak $it $mode }
                 elseif ($it.Type -eq 'feature')  { Invoke-WMFeature $it $mode }
                 elseif ($mode -eq 'apply') {
                     if ($it.Type -eq 'app')         { Install-WMApp $it }
